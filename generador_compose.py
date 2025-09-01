@@ -2,13 +2,15 @@ import sys
 
 def get_logging_level(side):
     if side == 'client':
-        path = 'client/config.yaml'
-    else:
-        path = 'server/config.ini'
-    with open(path, 'r') as f:
-        for line in f:
-            if line.startswith("LOGGING_LEVEL"):
-                return line.split("=")[1].strip()
+        with open('client/config.yaml', 'r') as f:
+            for line in f:
+                if line.startswith("CLI_LOGGING_LEVEL"):
+                    return line.split("=")[1].strip()
+    elif side == 'server':
+        with open('server/config.ini', 'r') as f:
+            for line in f:
+                if line.startswith("LOGGING_LEVEL"):
+                    return line.split("=")[1].strip()
     return "INFO"
 
 def main():
