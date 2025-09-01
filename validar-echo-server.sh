@@ -1,7 +1,7 @@
-NETWORK_NAME="tp0_testing_net"
+NETWORK_NAME=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' "$(docker compose -f docker-compose-dev.yaml ps -q server)" | head -n1)
 SERVER_SERVICE="server"
 SERVER_PORT=12345
-MSG="Testing Message From SH"
+MSG="Hello, World!"
 
 # obtener IP del server en la red
 SERVER_IP=$(docker network inspect "$NETWORK_NAME" \
@@ -10,7 +10,7 @@ SERVER_IP=$(docker network inspect "$NETWORK_NAME" \
   | tr -d '",/' )
 
 # ejecutar prueba con busybox+nc
-RESPONSE=$(echo "$MSG" | docker run --rm --network="$NETWORK_NAME" -i busybox nc -w 2 "$SERVER_IP" "$SERVER_PORT")
+RESPONSE=$(echo "$MSG" | docker run --rm --network="$NETWORK_NAME" -i busybox sh -c "nc -w 2 server $SERVER_PORT" | tr -d '\r')
 
 # comparar
 if [ "$RESPONSE" = "$MSG" ]; then
