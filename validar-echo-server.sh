@@ -1,5 +1,6 @@
-NETWORK_NAME=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' "$(docker compose -f docker-compose-dev.yaml ps -q server)" | head -n1)
-SERVER_SERVICE="server"
+
+CID=$(docker ps -q -f label=com.docker.compose.service=server | head -n1)
+NETWORK_NAME=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' "$CID" | head -n1)SERVER_SERVICE="server"
 SERVER_PORT=12345
 MSG="Hello, World!"
 
