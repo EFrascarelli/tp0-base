@@ -66,7 +66,7 @@ func (c *Client) StartClientLoop() {
 		// Create the connection the server in every loop iteration. Send an
 		select {
 		case <-ctx.Done():
-			log.Infof("action: shutdown | step: stop_loop | result: success | client_id: %v", c.config.ID)
+			log.Infof("action: shutdown | result: success | step: stop_loop | client_id: %v", c.config.ID)
 			return
 		default:
 		}
@@ -98,7 +98,7 @@ func (c *Client) StartClientLoop() {
 
 		if err != nil {
 			if ctx.Err() != nil {
-				log.Infof("action: receive_message | step: cancelled | result: success | client_id: %v", c.config.ID)
+				log.Infof("action: receive_message | result: success | step: cancelled | client_id: %v", c.config.ID)
 				return
 			}
 			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
@@ -114,7 +114,7 @@ func (c *Client) StartClientLoop() {
 		// Wait a time between sending one message and the next one
 		select {
 		case <-ctx.Done():
-			log.Infof("action: shutdown | step: break_sleep | result: success | client_id: %v", c.config.ID)
+			log.Infof("action: shutdown | result: success | step: break_sleep | client_id: %v", c.config.ID)
 			return
 		case <-time.After(c.config.LoopPeriod):
 		}
