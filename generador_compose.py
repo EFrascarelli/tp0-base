@@ -4,8 +4,10 @@ def get_logging_level(side):
     if side == 'client':
         with open('client/config.yaml', 'r') as f:
             for line in f:
-                if line.startswith("CLI_LOGGING_LEVEL"):
-                    return line.split("=")[1].strip()
+                if line.startswith("log:"):
+                    next_line = next(f).strip()
+                    if next_line.startswith("level:"):
+                        return next_line.split(":")[1].strip().strip('"')
     elif side == 'server':
         with open('server/config.ini', 'r') as f:
             for line in f:
