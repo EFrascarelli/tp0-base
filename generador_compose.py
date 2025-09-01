@@ -1,5 +1,16 @@
 import sys 
 
+def get_logging_level(side):
+    if side == 'client':
+        path = 'client/config.yaml'
+    else:
+        path = 'server/config.ini'
+    with open(path, 'r') as f:
+        for line in f:
+            if line.startswith("LOGGING_LEVEL"):
+                return line.split("=")[1].strip()
+    return "INFO"
+
 def main():
     if len(sys.argv) != 3:
         print("Uso: python3 generador_compose.py <nombre_archivo_salida> <cantidad_clientes>")
@@ -29,7 +40,7 @@ def main():
         f.write("      - ./server/config.ini:/config.ini\n")
         f.write("    environment:\n")
         f.write("      - PYTHONUNBUFFERED=1\n")
-        f.write("      - LOGGING_LEVEL=DEBUG\n")
+        f.write(f"      - LOGGING_LEVEL={get_logging_level('server')}\n")
         f.write("    networks:\n")
         f.write("      - testing_net\n")
         f.write("\n")
@@ -42,7 +53,7 @@ def main():
             f.write(f"      - ./client/config.yaml:/config.yaml\n")
             f.write(f"    environment:\n")
             f.write(f"      - CLI_ID={i+1}\n")
-            f.write(f"      - CLI_LOG_LEVEL=DEBUG\n")
+            f.write(f"      - CLI_LOG_LEVEL={get_logging_level('client')}\n")
             f.write(f"    networks:\n")
             f.write(f"      - testing_net\n")
             f.write(f"    depends_on:\n")
