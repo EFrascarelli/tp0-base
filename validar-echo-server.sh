@@ -1,11 +1,12 @@
+#!/bin/bash
 
-CID=$(docker ps -q -f label=com.docker.compose.service=server | head -n1)
-NETWORK_NAME=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' "$CID" | head -n1)SERVER_SERVICE="server"
+NETWORK_NAME=tp0_testing_net
+SERVER_SERVICE="server"
 SERVER_PORT=12345
-MSG="Hello, World!"
+MSG="Testing Message From SH"
 
 # obtener IP del server en la red
-SERVER_IP=$(docker network inspect "$NETWORK_NAME" \
+SERVER_IP=$(docker network inspect $NETWORK_NAME \
   | awk -v srv="$SERVER_SERVICE" '
       /"Name":/ && index($0, srv) {getline; getline; getline; print $2}' \
   | tr -d '",/' )
