@@ -28,7 +28,7 @@ class Server:
             if client_sock:
                 self.__handle_client_connection(client_sock)
             else:
-                logging.warning('action: wait_for_connection | result: timeout')
+                logging.warning('action: wait_for_connection | step: timeout | result: in_progress')
 
     def __handle_client_connection(self, client_sock):
         """
@@ -78,4 +78,4 @@ class Server:
             except Exception as e:
                 logging.error(f"action: close_connection | result: fail | error: {e}")
         self._server_socket.close()
-        logging.info(f'action: shutdown | result: success')
+        logging.info('action: exit | result: success')

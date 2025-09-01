@@ -98,7 +98,7 @@ func (c *Client) StartClientLoop() {
 
 		if err != nil {
 			if ctx.Err() != nil {
-				log.Infof("action: receive_message | result: cancelled | client_id: %v", c.config.ID)
+				log.Infof("action: receive_message | step: cancelled | result: success | client_id: %v", c.config.ID)
 				return
 			}
 			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
@@ -121,4 +121,5 @@ func (c *Client) StartClientLoop() {
 
 	}
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+	log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
 }
