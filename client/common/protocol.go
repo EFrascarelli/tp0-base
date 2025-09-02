@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
+	"os"
+	"encoding/csv"
+	"io"
 )
 
 type Bet struct {
@@ -31,7 +35,20 @@ type Ack struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type batchMsg struct {
+	V     int    `json:"v"`
+	Type  string `json:"type"`
+	Items []Bet  `json:"items"`
+}
 
+type AckBatch struct {
+    V      int    `json:"v"`
+    Type   string `json:"type"` // "ack_batch"
+    OK     bool   `json:"ok"`
+    Count  int    `json:"count,omitempty"`
+    Code   string `json:"code,omitempty"`
+    Reason string `json:"reason,omitempty"`
+}
 
 func writeFull(conn net.Conn, buf []byte) error {
 	total := 0
@@ -84,7 +101,6 @@ func readFrame(conn net.Conn, maxLen int) ([]byte, error) {
 	}
 	return readExact(conn, n)
 }
-
 
 
 func (c *Client) sendBet(ctx context.Context, nombre, apellido, dni, nacimiento string, numero int) error {
@@ -149,4 +165,58 @@ func (c *Client) sendBet(ctx context.Context, nombre, apellido, dni, nacimiento 
 
 	log.Infof("action: receive_ack | result: success | client_id: %v | dni: %s | numero: %d", c.config.ID, ack.DNI, ack.Numero)
 	return nil
+}
+
+func (c *Client) getBetsFromCSV(path string) ([]Bet, error) {
+    f, err := os.Open(path)
+    if err != nil {
+        log.Errorf("action: load_dataset | result: fail | step: open_file | path: %s | error: %v", path, err)
+        return nil, err
+    }
+    defer f.Close()
+
+    r := csv.NewReader(f)
+
+    var out []Bet
+    for {
+        rec, err := r.Read()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            log.Errorf("action: load_dataset | result: fail | step: read_record | path: %s | error: %v", path, err)
+            return nil, err
+        }
+
+        if len(rec) < 5 {
+            log.Errorf("action: load_dataset | result: fail | step: missing_columns | record: %v", rec)
+            return nil, fmt.Errorf("invalid record: not enough fields")
+        }
+
+        numero, err := strconv.Atoi(strings.TrimSpace(rec[4]))
+        if err != nil {
+            log.Errorf("action: load_dataset | result: fail | step: parse_number | value: %q | error: %v", rec[4], err)
+            return nil, err
+        }
+
+        b := Bet{
+            V:          1,
+            Type:       "bet",
+            Nombre:     strings.TrimSpace(rec[0]),
+            Apellido:   strings.TrimSpace(rec[1]),
+            DNI:        strings.TrimSpace(rec[2]),
+            Nacimiento: strings.TrimSpace(rec[3]),
+            Numero:     numero,
+        }
+
+        // Agencia: por convención, usar el ID del cliente
+        if id, err := strconv.Atoi(c.config.ID); err == nil {
+            b.AgenciaID = id
+        }
+
+        out = append(out, b)
+    }
+
+    log.Infof("action: load_dataset | result: success | path: %s | count: %d", path, len(out))
+    return out, nil
 }
