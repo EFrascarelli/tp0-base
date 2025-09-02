@@ -1,7 +1,7 @@
 import socket
 import logging
 import signal
-from common.bet_helper import get_bet, validate_bet, send_bet_confirmation, BetObj
+from server.common.protocol import get_bet, validate_bet, send_bet_confirmation, BetObj
 from common.utils import load_bets, store_bets, has_won
 
 class Server:

@@ -14,7 +14,7 @@ import (
 
 var log = logging.MustGetLogger("log")
 
-// ClientConfig Configuration used by the client
+
 type ClientConfig struct {
 	ID            string
 	ServerAddress string
@@ -22,14 +22,11 @@ type ClientConfig struct {
 	LoopPeriod    time.Duration
 }
 
-// Client Entity that encapsulates how
 type Client struct {
 	config ClientConfig
 	conn   net.Conn
 }
 
-// NewClient Initializes a new client receiving the configuration
-// as a parameter
 func NewClient(config ClientConfig) *Client {
 	client := &Client{
 		config: config,

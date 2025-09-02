@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// -----------------------------
-// Modelos (podés moverlos a model.go si preferís)
-// -----------------------------
-
 type Bet struct {
 	V          int    `json:"v"`
 	Type       string `json:"type"`
