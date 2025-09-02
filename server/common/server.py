@@ -1,10 +1,11 @@
 import socket
 import logging
 import signal
-from server.common.protocol import get_bet, validate_bet, send_bet_confirmation, BetObj
+from common.protocol import get_bet, validate_bet, send_bet_confirmation, BetObj, send_batch_ack_fail, send_batch_ack_success
 from common.utils import load_bets, store_bets, has_won
 
 class Server:
+
     def __init__(self, port, listen_backlog):
         # Initialize server socket
         self._is_running = True
@@ -27,22 +28,37 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         try:
-            # TODO: Modify the receive to avoid short-reads
-
-
-            bet = get_bet(client_sock)
+            received_bet = get_bet(client_sock)
             addr = client_sock.getpeername()
-            
-            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | bet: {bet}')
+            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | bet: {received_bet}')
 
-            try:
-                store_bets([BetObj(bet)])
-                logging.info(f'action: apuesta_almacenada | result: success | dni: {bet["dni"]} | numero: {bet["numero"]}')
-            except Exception as e:
-                logging.error(f'action: apuesta_almacenada | result: fail | dni: {bet.get("dni")} | numero: {bet.get("numero")} | error: {e}')
+            mtype = received_bet.get("type", "")
+
+            if mtype == "bets_batch":
+                items = received_bet.get("items", [])
+                n = len(items)
+
+                try:
+                    bets = [BetObj(it) for it in items]           # mapear a atributos que espera store_bets
+                    store_bets(bets)                               # persistir TODAS juntas (todo-o-nada)
+                    logging.info(f'action: apuesta_recibida | result: success | cantidad: {n}')
+                    send_batch_ack_success(client_sock, n)
+                except Exception as e:
+                    logging.error(f'action: apuesta_recibida | result: fail | cantidad: {n} | error: {e}')
+                    send_batch_ack_fail(client_sock, n, code="STORE_FAILED", reason=str(e))
                 return
-            
-            send_bet_confirmation(client_sock, bet)
+
+            else:
+                try:
+                    store_bets([BetObj(received_bet)])
+                    logging.info(f'action: apuesta_almacenada | result: success | dni: {received_bet["dni"]} | numero: {received_bet["numero"]}')
+                except Exception as e:
+                    logging.error(f'action: apuesta_almacenada | result: fail | dni: {received_bet.get("dni")} | numero: {received_bet.get("numero")} | error: {e}')
+                    # si preferís, podés enviar NACK individual aquí; no es requerido para Ej.6
+                    return
+
+                # ACK individual (mantener lo que ya tenías)
+                send_bet_confirmation(client_sock, received_bet)
         except OSError as e:
             logging.error(f'action: receive_message | result: fail | error: {e}')
         finally:

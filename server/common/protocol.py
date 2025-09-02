@@ -2,6 +2,15 @@ from datetime import datetime
 import json
 import logging
 
+class BetObj:
+    def __init__(self, d):
+        self.document = d.get("dni")
+        self.number = d.get("numero")
+        self.first_name = d.get("nombre")
+        self.last_name = d.get("apellido")
+        self.birthdate = d.get("nacimiento")
+        self.agency = d.get("agencia_id")
+
 def _recv_n_bytes(sock, n: int) -> bytes:
     """Lee exactamente n bytes del socket (reintentando hasta completar)."""
     data = bytearray()
@@ -88,11 +97,31 @@ def send_bet_confirmation(client_sock, bet):
     except Exception as e:
         logging.error(f'action: send_ack | result: fail | error: {e}')
 
-class BetObj:
-    def __init__(self, d):
-        self.document = d.get("dni")
-        self.number = d.get("numero")
-        self.first_name = d.get("nombre")
-        self.last_name = d.get("apellido")
-        self.birthdate = d.get("nacimiento")
-        self.agency = d.get("agencia_id")
+def send_batch_ack_success(client_sock, count: int) -> None:
+    """
+    Envía ACK de batch exitoso:
+      {"v":1,"type":"ack_batch","ok":true,"count":N}
+    """
+    ack = {"v": 1, "type": "ack_batch", "ok": True, "count": count}
+    payload = json.dumps(ack, ensure_ascii=False).encode("utf-8")
+    header = len(payload).to_bytes(4, "big", signed=False)
+    client_sock.sendall(header + payload)
+    logging.info(f'action: send_ack | result: success | type: ack_batch | count: {count}')
+
+def send_batch_ack_fail(client_sock, count: int, code: str, reason: str) -> None:
+    """
+    Envía NACK de batch:
+      {"v":1,"type":"ack_batch","ok":false,"count":N,"code":"...","reason":"..."}
+    """
+    ack = {
+        "v": 1,
+        "type": "ack_batch",
+        "ok": False,
+        "count": count,
+        "code": code,
+        "reason": reason,
+    }
+    payload = json.dumps(ack, ensure_ascii=False).encode("utf-8")
+    header = len(payload).to_bytes(4, "big", signed=False)
+    client_sock.sendall(header + payload)
+    logging.info(f'action: send_ack | result: success | type: ack_batch | count: {count} | step: nack_sent')
