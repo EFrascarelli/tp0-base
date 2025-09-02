@@ -85,7 +85,7 @@ func (c *Client) StartClientLoop() {
 		log.Infof("action: config | result: success | step: batch_default | client_id: %v | batch_max: %d", c.config.ID, batchMax)
 	}
 	
-    for i := 0; i < len(bets); i += batchMax {
+    for i := 0; i < len(bets); {
         select {
         case <-ctx.Done():
             log.Infof("action: shutdown | result: success | step: stop_loop | client_id: %v", c.config.ID)
@@ -125,6 +125,8 @@ func (c *Client) StartClientLoop() {
         }
         _ = c.conn.Close()
         c.conn = nil
+
+		i+=len(chunk)
 
         // Log de negocio para batch
         log.Infof("action: apuesta_enviada | result: success | cantidad: %d", len(chunk))
