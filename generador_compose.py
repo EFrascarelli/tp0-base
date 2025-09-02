@@ -55,6 +55,8 @@ def main():
             f.write(f"    entrypoint: /client\n")
             f.write(f"    volumes:\n")
             f.write(f"      - ./client/config.yaml:/config.yaml\n")
+            f.write(f"    env_file:\n")
+            f.write(f"      - ./client{i+1}.env\n")
             f.write(f"    environment:\n")
             f.write(f"      - CLI_ID={i+1}\n")
             f.write(f"      - CLI_LOG_LEVEL={get_logging_level('client')}\n")

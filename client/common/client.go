@@ -1,7 +1,6 @@
 package common
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 	"time"
@@ -9,6 +8,8 @@ import (
     "os/signal"
     "syscall"
 	"github.com/op/go-logging"
+	"os"
+	"strconv"
 )
 
 var log = logging.MustGetLogger("log")
@@ -36,9 +37,37 @@ func NewClient(config ClientConfig) *Client {
 	return client
 }
 
-// CreateClientSocket Initializes client socket. In case of
-// failure, error is printed in stdout/stderr and exit 1
-// is returned
+func (c *Client) getEnvs() (nombre, apellido, dni, nacimiento string, numero int, err error) {
+	// leer bet desde ENV
+	nombre = os.Getenv("NOMBRE")
+	apellido = os.Getenv("APELLIDO")
+	dni = os.Getenv("DOCUMENTO")
+	nacimiento = os.Getenv("NACIMIENTO")
+	numStr := os.Getenv("NUMERO")
+
+	// convertir NUMERO a int
+	numero, convErr := strconv.Atoi(numStr)
+	if convErr != nil {
+		log.Errorf("action: config_apuesta | result: fail | step: parse_num | client_id: %v | value: %v | error: %v",
+			c.config.ID, numStr, convErr)
+		return "", "", "", "", 0, convErr
+	}
+
+	// validaciones mínimas
+	if dni == "" || nombre == "" || apellido == "" || nacimiento == "" {
+		log.Errorf("action: config_apuesta | result: fail | step: missing_field | client_id: %v | dni:%q nombre:%q apellido:%q nacimiento:%q",
+			c.config.ID, dni, nombre, apellido, nacimiento)
+		return "", "", "", "", 0, fmt.Errorf("missing required field")
+	}
+
+	// log de configuración exitosa
+	log.Infof("action: config_apuesta | result: success | client_id: %v | dni: %s | numero: %d | nombre: %s | apellido: %s | nacimiento: %s",
+		c.config.ID, dni, numero, nombre, apellido, nacimiento)
+
+	return nombre, apellido, dni, nacimiento, numero, nil
+}
+
+
 func (c *Client) createClientSocket() error {
 	conn, err := net.Dial("tcp", c.config.ServerAddress)
 	if err != nil {
@@ -53,17 +82,19 @@ func (c *Client) createClientSocket() error {
 	return nil
 }
 
-// StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
-	
-	
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// There is an autoincremental msgID to identify every message sent
-	// Messages if the message amount threshold has not been surpassed
+	nombre, apellido, dni, nacimiento, numero, err := c.getEnvs()
+	if err != nil {
+		return
+	}
+	log.Infof("action: client_config | result: success | client_id: %v | dni: %s | numero: %d | nombre: %s | apellido: %s | nacimiento: %s",
+		c.config.ID, dni, numero, nombre, apellido, nacimiento)
+
 	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
-		// Create the connection the server in every loop iteration. Send an
+		// Permitir cancelación por señal antes de iniciar trabajo
 		select {
 		case <-ctx.Done():
 			log.Infof("action: shutdown | result: success | step: stop_loop | client_id: %v", c.config.ID)
@@ -71,55 +102,36 @@ func (c *Client) StartClientLoop() {
 		default:
 		}
 
-		c.createClientSocket()
+		if err := c.createClientSocket(); err != nil {
+			return
+		}
 
-		// Agrego un watcher
-		done := make(chan struct{})
-		go func() {
-			select {
-			case <-ctx.Done():
-				if c.conn != nil {
-					_ = c.conn.Close() // fuerza que ReadString falle y libere la goroutine
-					log.Infof("action: close_socket | result: success | client_id: %v", c.config.ID)
-				}
-			case <-done:
+		if err := c.sendBet(ctx, nombre, apellido, dni, nacimiento, numero); err != nil {
+			if ctx.Err() != nil {
+				log.Infof("action: receive_ack | result: success | step: cancelled | client_id: %v", c.config.ID)
+			} else {
+				log.Errorf("action: send_bet | result: fail | step: io | client_id: %v | error: %v", c.config.ID, err)
 			}
-		}()
-		// TODO: Modify the send to avoid short-write
-		fmt.Fprintf(
-			c.conn,
-			"[CLIENT %v] Message N°%v\n",
-			c.config.ID,
-			msgID,
-		)
-		msg, err := bufio.NewReader(c.conn).ReadString('\n')
+			_ = c.conn.Close()
+			c.conn = nil
+			return
+		}
+
+		log.Infof("action: apuesta_enviada | result: success | dni: %s | numero: %d", dni, numero)
 		_ = c.conn.Close()
 		c.conn = nil
 
-		if err != nil {
-			if ctx.Err() != nil {
-				log.Infof("action: receive_message | result: success | step: cancelled | client_id: %v", c.config.ID)
+		// Si hay más de una iteración, esperar entre envíos
+		if c.config.LoopAmount > 1 {
+			select {
+			case <-ctx.Done():
+				log.Infof("action: shutdown | result: success | step: break_sleep | client_id: %v", c.config.ID)
 				return
+			case <-time.After(c.config.LoopPeriod):
 			}
-			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
-				c.config.ID, err)
-			return
 		}
-
-		log.Infof("action: receive_message | result: success | client_id: %v | msg: %v",
-			c.config.ID,
-			msg,
-		)
-
-		// Wait a time between sending one message and the next one
-		select {
-		case <-ctx.Done():
-			log.Infof("action: shutdown | result: success | step: break_sleep | client_id: %v", c.config.ID)
-			return
-		case <-time.After(c.config.LoopPeriod):
-		}
-
 	}
+
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
 	log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
 }
