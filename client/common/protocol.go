@@ -35,7 +35,7 @@ type Ack struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-type batchMsg struct {
+type BatchMsg struct {
 	V     int    `json:"v"`
 	Type  string `json:"type"`
 	Items []Bet  `json:"items"`
@@ -102,6 +102,95 @@ func readFrame(conn net.Conn, maxLen int) ([]byte, error) {
 	return readExact(conn, n)
 }
 
+func (c *Client) sendBatch(ctx context.Context, items []Bet) error {
+
+	// 1) serializar payload
+	msg := BatchMsg{V: 1, Type: "bets_batch", Items: items}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+
+	
+	// 2) escribir frame (4B big-endian + body)
+	_ = c.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if err := writeFrame(c.conn, data); err != nil {
+		return err
+	}
+
+	// 3) leer respuesta y VALIDAR ack de batch
+	_ = c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	body, err := readFrame(c.conn, 16*1024)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Errorf("action: receive_ack | result: fail | step: read_frame | client_id: %v | error: %v", c.config.ID, err)
+		return err
+	}
+
+	var ack AckBatch
+	if err := json.Unmarshal(body, &ack); err != nil {
+		log.Errorf("action: receive_ack | result: fail | step: json_unmarshal | client_id: %v | error: %v", c.config.ID, err)
+		return err
+	}
+	if ack.Type != "ack_batch" {
+		err := fmt.Errorf("unexpected ack type: %s", ack.Type)
+		log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, err)
+		return err
+	}
+	if !ack.OK {
+		err := fmt.Errorf("%s: %s", ack.Code, ack.Reason)
+		log.Errorf("action: receive_ack | result: fail | step: nack | client_id: %v | error: %v", c.config.ID, err)
+		return err
+	}
+
+	// coherencia opcional de cantidad
+	count := ack.Count
+	if count == 0 {
+		count = len(items)
+	} else if count != len(items) {
+		err := fmt.Errorf("ack count mismatch: got %d want %d", ack.Count, len(items))
+		log.Errorf("action: receive_ack | result: fail | step: count_mismatch | client_id: %v | error: %v", c.config.ID, err)
+		return err
+	}
+
+	log.Infof("action: receive_ack | result: success | type: ack_batch | client_id: %v | count: %d", c.config.ID, count)
+	return nil
+
+		// 4) listo (más adelante: validar ack_batch / ok:true / count, etc.)
+		return nil
+	}
+
+
+	func (c *Client) createClientSocket() error {
+	conn, err := net.Dial("tcp", c.config.ServerAddress)
+	if err != nil {
+		log.Criticalf(
+			"action: connect | result: fail | client_id: %v | error: %v",
+			c.config.ID,
+			err,
+		)
+		return err
+	}
+	c.conn = conn
+	return nil
+}
+
+func (c *Client) fitBatchBySize(items []Bet, maxBytes int) ([]Bet, int, error) {
+    for n := len(items); n > 0; n-- {
+        msg := BatchMsg{V: 1, Type: "bets_batch", Items: items[:n]}
+        data, err := json.Marshal(msg)
+        if err != nil {
+            return nil, 0, err
+        }
+        if len(data) <= maxBytes {
+            return items[:n], len(data), nil
+        }
+    }
+    return nil, 0, fmt.Errorf("single_too_large")
+}
 
 func (c *Client) sendBet(ctx context.Context, nombre, apellido, dni, nacimiento string, numero int) error {
 	// Armar payload
