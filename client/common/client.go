@@ -21,6 +21,7 @@ type ClientConfig struct {
 	ServerAddress string
 	LoopAmount    int
 	LoopPeriod    time.Duration
+	BatchMaxAmount int 
 }
 
 type Client struct {
@@ -155,7 +156,7 @@ func (c *Client) StartClientLoop() {
     log.Infof("action: dataset_loaded | result: success | client_id: %v | path: %s | count: %d",
         c.config.ID, agencyPath, len(bets))
 
-    batchMax := 50 // luego lo leeremos de config.yaml
+    batchMax := c.config.BatchMaxAmount // luego lo leeremos de config.yaml
 
     for i := 0; i < len(bets); i += batchMax {
         select {
