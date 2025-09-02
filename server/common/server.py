@@ -1,7 +1,7 @@
 import socket
 import logging
 import signal
-from common.bet_helper import get_bet, validate_bet, send_bet_confirmation
+from common.bet_helper import get_bet, validate_bet, send_bet_confirmation, BetObj
 from common.utils import load_bets, store_bets, has_won
 
 class Server:
@@ -36,15 +36,10 @@ class Server:
             logging.info(f'action: receive_message | result: success | ip: {addr[0]} | bet: {bet}')
 
             try:
-                validate_bet(bet)
-                try:
-                    store_bets([bet])
-                    logging.info(f'action: apuesta_almacenada | result: success | dni: {bet["dni"]} | numero: {bet["numero"]}')
-                except Exception as e:
-                    logging.error(f'action: apuesta_almacenada | result: fail | dni: {bet.get("dni")} | numero: {bet.get("numero")} | error: {e}')
-                    return
+                store_bets([BetObj(bet)])
+                logging.info(f'action: apuesta_almacenada | result: success | dni: {bet["dni"]} | numero: {bet["numero"]}')
             except Exception as e:
-                logging.error(f'action: validate_bet | result: fail | error: {e}')
+                logging.error(f'action: apuesta_almacenada | result: fail | dni: {bet.get("dni")} | numero: {bet.get("numero")} | error: {e}')
                 return
             
             send_bet_confirmation(client_sock, bet)

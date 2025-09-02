@@ -73,10 +73,26 @@ def validate_bet(bet):
     return True
 
 def send_bet_confirmation(client_sock, bet):
-    """
-    Send a confirmation message back to the client after a successful bet placement.
-    """
-    confirmation_msg = json.dumps({"status": "success", "bet": bet})
-    confirmation_msg = confirmation_msg.encode("utf-8")
-    confirmation_header = len(confirmation_msg).to_bytes(4, byteorder="big")
-    client_sock.sendall(confirmation_header + confirmation_msg)
+    try:
+        ack = {
+            "v": 1,
+            "type": "ack",
+            "ok": True,
+            "dni": bet.get("dni"),
+            "numero": bet.get("numero"),
+        }
+        confirmation_msg = json.dumps(ack, ensure_ascii=False).encode("utf-8")
+        confirmation_header = len(confirmation_msg).to_bytes(4, byteorder="big", signed=False)
+        client_sock.sendall(confirmation_header + confirmation_msg)
+        logging.info(f'action: send_ack | result: success | dni: {ack["dni"]} | numero: {ack["numero"]}')
+    except Exception as e:
+        logging.error(f'action: send_ack | result: fail | error: {e}')
+
+class BetObj:
+    def __init__(self, d):
+        self.document = d.get("dni")
+        self.number = d.get("numero")
+        self.first_name = d.get("nombre")
+        self.last_name = d.get("apellido")
+        self.birthdate = d.get("nacimiento")
+        self.agency = d.get("agencia_id")
