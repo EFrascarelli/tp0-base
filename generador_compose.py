@@ -59,6 +59,7 @@ def main():
             f.write(f"    environment:\n")
             f.write(f"      - CLI_ID={i+1}\n")
             f.write(f"      - CLI_LOG_LEVEL={get_logging_level('client')}\n")
+            f.write(f"      - REQUIRED_AGENCIES={num_clients}\n")
             f.write(f"    networks:\n")
             f.write(f"      - testing_net\n")
             f.write(f"    depends_on:\n")

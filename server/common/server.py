@@ -1,6 +1,7 @@
 import socket
 import logging
 import signal
+import os
 from common.protocol import get_bet, send_bet_confirmation, send_batch_ack_fail, send_batch_ack_success, send_finish_ack, send_winners_ok, send_winners_fail
 from common.utils import Bet, load_bets, store_bets, has_won
 
@@ -17,7 +18,7 @@ class Server:
         self._draw_done = False
         self._winners_ready = False
         self._winners_by_agency = {}
-        self._required_agencies = 5  # consigna: esperar 5 agencias
+        self._required_agencies = int(os.environ.get("REQUIRED_AGENCIES", "5"))
         signal.signal(signal.SIGTERM, self.__signal_handler)
 
     def run(self):
@@ -90,13 +91,13 @@ class Server:
                 return
 
             elif msg_type == "winners_query":
-                agency_id = int(payload)
-                if not self._winners_ready:
-                    send_winners_fail(client_sock, "NOT_READY", "sorteo no realizado")
-                else:
-                    dnis = self._winners_by_agency.get(agency_id, [])
-                    send_winners_ok(client_sock, dnis)
-                return
+                    agency_id = int(payload)
+                    if not self._draw_done:  # o mantené _winners_ready si preferís, pero _draw_done es suficiente
+                        send_winners_fail(client_sock, "NOT_READY", "sorteo no realizado")
+                    else:
+                        dnis = self._winners_by_agency.get(agency_id, [])
+                        send_winners_ok(client_sock, len(dnis), dnis)  # ← pasar count y lista
+                    return
 
             else:
                 bet_dict = payload

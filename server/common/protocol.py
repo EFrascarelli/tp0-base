@@ -66,17 +66,27 @@ def get_bet(client_sock, max_len: int = 16 * 1024):
         head = lines[0].split('|')
         kind = head[0]
 
-        # NOTIFY|DONE|<agency_id>
-        if kind == 'NOTIFY' and len(head) == 3 and head[1] == 'DONE':
-            agid = int(head[2])
-            logging.info(f"action: receive_message | result: success | step: notify_done | agency: {agid}")
-            return ("finish", agid)
+        if kind == 'NOTIFY':
+            # NOTIFY|DONE|<agency_id>
+            if len(head) == 3 and head[1] == 'DONE':
+                try:
+                    agid = int(head[2])
+                except ValueError:
+                    raise ValueError(f'bad agency id in notify: {lines[0]!r}')
+                logging.info(f"action: receive_message | result: success | step: framed_read | length: {length}")
+                return ("finish", agid)
+            raise ValueError(f'bad notify line: {lines[0]!r}')
 
-        # WINQ|<agency_id>
-        if kind == 'WINQ' and len(head) == 2:
-            agid = int(head[1])
-            logging.info(f"action: receive_message | result: success | step: winners_query | agency: {agid}")
-            return ("winners_query", agid)
+        if kind == 'WINQ':
+            # WINQ|<agency_id>
+            if len(head) == 2:
+                try:
+                    agid = int(head[1])
+                except ValueError:
+                    raise ValueError(f'bad agency id in winq: {lines[0]!r}')
+                logging.info(f"action: receive_message | result: success | step: framed_read | length: {length}")
+                return ("winners_query", agid)
+            raise ValueError(f'bad winq line: {lines[0]!r}')
 
         if kind == 'BET':
             bet = _parse_bet_line(lines[0])
@@ -150,18 +160,10 @@ def send_finish_ack(client_sock):
     except Exception as e:
         logging.error(f'action: send_ack | result: fail | type: ack_notify_done | error: {e}')
 
-def send_winners_ok(client_sock, winners):
-    """
-    Respuesta éxito a consulta de ganadores:
-      WRES|OK|<count>|dni1,dni2,...
-    (si count=0, se omite la 4ta parte)
-    """
+def send_winners_ok(client_sock, count: int, dni_list: list[str]) -> None:
     try:
-        count = len(winners)
-        if count > 0:
-            line = f"WRES|OK|{count}|{','.join(winners)}"
-        else:
-            line = f"WRES|OK|0"
+        csv = ",".join(dni_list)
+        line = f"WRES|OK|{int(count)}|{csv}\n"
         payload = line.encode("utf-8")
         header = len(payload).to_bytes(4, "big", signed=False)
         client_sock.sendall(header + payload)
@@ -169,13 +171,9 @@ def send_winners_ok(client_sock, winners):
     except Exception as e:
         logging.error(f'action: send_winners | result: fail | error: {e}')
 
-def send_winners_fail(client_sock, code, reason):
-    """
-    Respuesta error a consulta de ganadores:
-      WRES|FAIL|<code>|<reason>
-    """
+def send_winners_fail(client_sock, code: str, reason: str) -> None:
     try:
-        line = f"WRES|FAIL|{_escape(code)}|{_escape(reason)}"
+        line = f"WRES|FAIL|{_escape(code)}|{_escape(reason)}\n"
         payload = line.encode("utf-8")
         header = len(payload).to_bytes(4, "big", signed=False)
         client_sock.sendall(header + payload)
