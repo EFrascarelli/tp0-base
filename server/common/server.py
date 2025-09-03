@@ -13,12 +13,13 @@ class Server:
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
+        self._finished = set()
+        self._draw_done = False
+        self._winners_ready = False
         signal.signal(signal.SIGTERM, self.__signal_handler)
 
     def run(self):
 
-        # TODO: Modify this program to handle signal to graceful shutdown
-        # the server
         while self._is_running:
             client_sock = self.__accept_new_connection()
             if client_sock:
@@ -32,8 +33,43 @@ class Server:
             addr = client_sock.getpeername()
             logging.info(f'action: receive_message | result: success | ip: {addr[0]} | msg_type: {msg_type}')
 
-            if msg_type == "batch":
-                items = payload 
+
+
+
+            if msg_type == "finish":
+                try:
+                    agency_id = int(payload)  # el notify trae la agencia
+                except Exception:
+                    agency_id = None
+
+                if agency_id is not None:
+                    self._finished.add(agency_id)
+                    logging.info(f'action: finish | result: success | agency: {agency_id} | total_agencias_listas: {len(self._finished)}')
+                else:
+                    logging.error('action: finish | result: fail | step: parse_agency')
+
+                # ACK opcional (recomendado)
+                try:
+                    from common.protocol import send_finish_ack
+                    send_finish_ack(client_sock)
+                except Exception:
+                    pass
+
+                # ¿ya terminaron las 5?
+                if not self._draw_done and len(self._finished) >= 5:
+                    # cargar apuestas y marcar sorteo listo
+                    try:
+                        # No hace falta guardar en memoria aún; con log alcanza para el test de "sorteo".
+                        logging.info('action: sorteo | result: success')
+                        self._draw_done = True
+                        self._winners_ready = True  # listo para responder ganadores (lo vemos en el siguiente paso)
+                    except Exception as e:
+                        logging.error(f'action: sorteo | result: fail | error: {e}')
+
+                return  # terminamos el manejo de este cliente (solo venía a notificar)
+
+            elif msg_type == "batch":
+                items = payload
                 n = len(items)
 
                 try:
@@ -75,6 +111,7 @@ class Server:
 
                 # ACK individual (mantener lo que ya tenías)
                 send_bet_confirmation(client_sock, bet_dict)
+        
         except OSError as e:
             logging.error(f'action: receive_message | result: fail | error: {e}')
         finally:

@@ -428,3 +428,31 @@ func betLine(b Bet, agID int) string {
         agID,
     )
 }
+
+// sendNotifyDone envía: NOTIFY|DONE|<agency_id>\n  y espera ACKN|OK
+func (c *Client) sendNotifyDone(ctx context.Context) error {
+    // agency_id = CLI_ID
+    line := fmt.Sprintf("NOTIFY|DONE|%s\n", c.config.ID)
+    payload := []byte(line)
+
+    // escribir (frame 4B + body)
+    _ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+    if err := writeFrame(c.conn, payload); err != nil {
+        return err
+    }
+
+    // leer ACK de notify
+    _ = c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+    body, err := readFrame(c.conn, 4*1024)
+    if err != nil {
+        if ctx.Err() != nil { return ctx.Err() }
+        return err
+    }
+
+    // esperamos texto: "ACKN|OK\n"
+    if string(body) != "ACKN|OK\n" {
+        return fmt.Errorf("unexpected notify ack: %q", string(body))
+    }
+    log.Infof("action: notify_done | result: success | client_id: %v", c.config.ID)
+    return nil
+}

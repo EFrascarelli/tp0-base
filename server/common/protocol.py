@@ -11,6 +11,27 @@ def _recv_n_bytes(sock, n: int) -> bytes:
         data.extend(chunk)
     return bytes(data)
 
+def _parse_bet_line(line: str) -> dict:
+    parts = line.split('|')
+    if len(parts) != 7 or parts[0] != 'BET':
+        raise ValueError(f'bad bet line: {line!r}')
+    document        = _unescape(parts[1])
+    number_str = parts[2]
+    first_name     = _unescape(parts[3])
+    last_name   = _unescape(parts[4])
+    birthdate = _unescape(parts[5])
+    agency_id = parts[6]
+    number = int(number_str)
+    agid   = int(agency_id)
+    return {
+        "document": document,
+        "number": number,
+        "first_name": first_name,
+        "last_name": last_name,
+        "birthdate": birthdate,
+        "agency": agid,
+    }
+
 def get_bet(client_sock, max_len: int = 16 * 1024):
     prev_timeout = None
     try:
@@ -44,27 +65,6 @@ def get_bet(client_sock, max_len: int = 16 * 1024):
 
         head = lines[0].split('|')
         kind = head[0]
-
-        def _parse_bet_line(line: str) -> dict:
-            parts = line.split('|')
-            if len(parts) != 7 or parts[0] != 'BET':
-                raise ValueError(f'bad bet line: {line!r}')
-            document        = _unescape(parts[1])
-            number_str = parts[2]
-            first_name     = _unescape(parts[3])
-            last_name   = _unescape(parts[4])
-            birthdate = _unescape(parts[5])
-            agency_id = parts[6]
-            number = int(number_str)
-            agid   = int(agency_id)
-            return {
-                "document": document,
-                "number": number,
-                "first_name": first_name,
-                "last_name": last_name,
-                "birthdate": birthdate,
-                "agency": agid,
-            }
 
         if kind == 'BET':
             bet = _parse_bet_line(lines[0])
@@ -127,6 +127,16 @@ def send_batch_ack_fail(client_sock, count: int, code: str, reason: str) -> None
         logging.info(f'action: send_ack | result: success | type: ack_batch | count: {count} | step: nack_sent')
     except Exception as e:
         logging.error(f'action: send_ack | result: fail | type: ack_batch | error: {e}')
+
+def send_finish_ack(client_sock):
+    try:
+        line = "ACKF|OK"
+        payload = line.encode("utf-8")
+        header = len(payload).to_bytes(4, "big", signed=False)
+        client_sock.sendall(header + payload)
+        logging.info('action: send_ack | result: success | type: ack_finish')
+    except Exception as e:
+        logging.error(f'action: send_ack | result: fail | type: ack_finish | error: {e}')
 
 def _escape(s: str) -> str:
     return s.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n')

@@ -122,29 +122,50 @@ func (c *Client) StartClientLoop() {
 		}
 		if size > 0 && len(chunk) < (end-i) {
 			log.Infof("action: send_batch | result: in_progress | step: shrink_by_bytes | bytes: %d | count: %d", size, len(chunk))
-}
+		}
 
-        if err := c.createClientSocket(); err != nil {
-            return
-        }
-        if err := c.sendBatch(ctx, chunk); err != nil {
-            if ctx.Err() != nil {
-                log.Infof("action: send_batch | result: success | step: cancelled | client_id: %v", c.config.ID)
-            } else {
-                log.Errorf("action: send_batch | result: fail | step: io | client_id: %v | error: %v", c.config.ID, err)
-            }
-            _ = c.conn.Close()
-            c.conn = nil
-            return
-        }
-        _ = c.conn.Close()
-        c.conn = nil
+		// abrir conexión por batch
+		if err := c.createClientSocket(); err != nil {
+			log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+			return
+		}
 
-		i+=len(chunk)
+		// enviar batch
+		if err := c.sendBatch(ctx, chunk); err != nil {
+			if ctx.Err() != nil {
+				// cancelado por señal → salir graceful
+				log.Infof("action: shutdown | result: success | step: send_batch_cancelled | client_id: %v", c.config.ID)
+			} else {
+				log.Errorf("action: send_batch | result: fail | step: io | client_id: %v | error: %v", c.config.ID, err)
+			}
+			_ = c.conn.Close()
+			c.conn = nil
+			return // abortamos para no entrar en reintentos infinitos
+		}
 
-        // Log de negocio para batch
-        log.Infof("action: apuesta_enviada | result: success | cantidad: %d", len(chunk))
+
+
+		// éxito → cerramos, avanzamos índice y registramos negocio
+		log.Infof("action: apuesta_enviada | result: success | cantidad: %d", len(chunk))
+		_ = c.conn.Close()
+		c.conn = nil
+
+		i += len(chunk) // ⚠️ avanzar al próximo segmento
     }
+
+	if err := c.createClientSocket(); err != nil {
+		log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+
+	if err := c.notifyDone(ctx); err != nil {
+		log.Errorf("action: finish | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		_ = c.conn.Close()
+		c.conn = nil
+		return
+	}
+	_ = c.conn.Close()
+	c.conn = nil
 
     log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
 }
