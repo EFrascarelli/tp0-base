@@ -3,7 +3,8 @@ package common
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
+	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -102,158 +103,264 @@ func readFrame(conn net.Conn, maxLen int) ([]byte, error) {
 	return readExact(conn, n)
 }
 
+// --- helpers de protocolo textual (escape / unescape / writeLine / readLine) ---
+
+func escape(s string) string {
+    s = strings.ReplaceAll(s, `\`, `\\`)
+    s = strings.ReplaceAll(s, `|`, `\|`)
+    s = strings.ReplaceAll(s, "\n", `\n`)
+    return s
+}
+
+func unescape(s string) string {
+    var b strings.Builder
+    for i := 0; i < len(s); {
+        if s[i] == '\\' && i+1 < len(s) {
+            switch s[i+1] {
+            case '\\':
+                b.WriteByte('\\'); i += 2; continue
+            case '|':
+                b.WriteByte('|'); i += 2; continue
+            case 'n':
+                b.WriteByte('\n'); i += 2; continue
+            }
+        }
+        b.WriteByte(s[i])
+        i++
+    }
+    return b.String()
+}
+
+// Escribe una línea asegurando short-write safe.
+func writeLine(conn net.Conn, line string) error {
+    if !strings.HasSuffix(line, "\n") {
+        line += "\n"
+    }
+    buf := []byte(line)
+    written := 0
+    for written < len(buf) {
+        n, err := conn.Write(buf[written:])
+        if err != nil {
+            return err
+        }
+        if n == 0 {
+            return fmt.Errorf("short write: wrote 0 bytes")
+        }
+        written += n
+    }
+    return nil
+}
+
+// Lee una línea terminada en '\n' (maneja short-reads)
+func readLine(conn net.Conn) (string, error) {
+    r := bufio.NewReader(conn)
+    line, err := r.ReadBytes('\n')
+    if err != nil {
+        return "", err
+    }
+    line = bytes.TrimSuffix(line, []byte{'\n'})
+    return string(line), nil
+}
+
 func (c *Client) sendBatch(ctx context.Context, items []Bet) error {
+    agID := 0
+    if id, err := strconv.Atoi(c.config.ID); err == nil {
+        agID = id
+    }
 
-	// 1) serializar payload
-	msg := BatchMsg{V: 1, Type: "bets_batch", Items: items}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
+    // 1) construir body textual: 
+    //    primera línea:  BATCH|<count>\n
+    //    luego N líneas: BET|... (una por apuesta) + '\n'
+    var b strings.Builder
+    b.WriteString(fmt.Sprintf("BATCH|%d\n", len(items)))
+    for _, it := range items {
+        b.WriteString(betLine(it, agID))
+        b.WriteByte('\n')
+    }
+    body := []byte(b.String())
 
+    // 2) enviar frame (4B + body)
+    _ = c.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+    if err := writeFrame(c.conn, body); err != nil {
+        if ctx.Err() != nil {
+            return ctx.Err()
+        }
+        log.Errorf("action: send_batch | result: fail | step: write_frame | client_id: %v | error: %v", c.config.ID, err)
+        return err
+    }
 
-	
-	// 2) escribir frame (4B big-endian + body)
-	_ = c.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	if err := writeFrame(c.conn, data); err != nil {
-		return err
-	}
+    // 3) leer ACK del batch (formato textual con framing):
+    //    éxito: ACKB|OK|<count>\n
+    //    error:  ACKB|FAIL|<code>|<reason>\n
+    _ = c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+    resp, err := readFrame(c.conn, 16*1024)
+    if err != nil {
+        if ctx.Err() != nil {
+            return ctx.Err()
+        }
+        log.Errorf("action: receive_ack | result: fail | step: read_frame | client_id: %v | error: %v", c.config.ID, err)
+        return err
+    }
 
-	// 3) leer respuesta y VALIDAR ack de batch
-	_ = c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	body, err := readFrame(c.conn, 16*1024)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		log.Errorf("action: receive_ack | result: fail | step: read_frame | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
+    line := strings.TrimSuffix(string(resp), "\n")
+    parts := strings.Split(line, "|")
+    if len(parts) < 2 || parts[0] != "ACKB" {
+        e := fmt.Errorf("bad ack batch line: %q", line)
+        log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, e)
+        return e
+    }
 
-	var ack AckBatch
-	if err := json.Unmarshal(body, &ack); err != nil {
-		log.Errorf("action: receive_ack | result: fail | step: json_unmarshal | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
-	if ack.Type != "ack_batch" {
-		err := fmt.Errorf("unexpected ack type: %s", ack.Type)
-		log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
-	if !ack.OK {
-		err := fmt.Errorf("%s: %s", ack.Code, ack.Reason)
-		log.Errorf("action: receive_ack | result: fail | step: nack | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
+    switch parts[1] {
+    case "OK":
+        if len(parts) != 3 {
+            e := fmt.Errorf("bad ackb ok fields: %q", line)
+            log.Errorf("action: receive_ack | result: fail | step: bad_fields | client_id: %v | error: %v", c.config.ID, e)
+            return e
+        }
+        cnt, conv := strconv.Atoi(parts[2])
+        if conv != nil {
+            log.Errorf("action: receive_ack | result: fail | step: parse_count | client_id: %v | value: %q | error: %v", c.config.ID, parts[2], conv)
+            return conv
+        }
+        // coherencia opcional
+        if cnt != len(items) {
+            e := fmt.Errorf("ack count mismatch: got %d want %d", cnt, len(items))
+            log.Errorf("action: receive_ack | result: fail | step: count_mismatch | client_id: %v | error: %v", c.config.ID, e)
+            return e
+        }
+        log.Infof("action: receive_ack | result: success | type: ack_batch | client_id: %v | count: %d", c.config.ID, cnt)
+        return nil
 
-	// coherencia opcional de cantidad
-	count := ack.Count
-	if count == 0 {
-		count = len(items)
-	} else if count != len(items) {
-		err := fmt.Errorf("ack count mismatch: got %d want %d", ack.Count, len(items))
-		log.Errorf("action: receive_ack | result: fail | step: count_mismatch | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
+    case "FAIL":
+        if len(parts) != 4 {
+            e := fmt.Errorf("bad ackb fail fields: %q", line)
+            log.Errorf("action: receive_ack | result: fail | step: bad_fields | client_id: %v | error: %v", c.config.ID, e)
+            return e
+        }
+        code := parts[2]
+        reason := unescape(parts[3])
+        e := fmt.Errorf("%s: %s", code, reason)
+        log.Errorf("action: receive_ack | result: fail | step: nack | client_id: %v | error: %v", c.config.ID, e)
+        return e
 
-	log.Infof("action: receive_ack | result: success | type: ack_batch | client_id: %v | count: %d", c.config.ID, count)
-	return nil
-
-		// 4) listo (más adelante: validar ack_batch / ok:true / count, etc.)
-		return nil
-	}
-
-
-	func (c *Client) createClientSocket() error {
-	conn, err := net.Dial("tcp", c.config.ServerAddress)
-	if err != nil {
-		log.Criticalf(
-			"action: connect | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
-		return err
-	}
-	c.conn = conn
-	return nil
+    default:
+        e := fmt.Errorf("unexpected ackb status: %s", parts[1])
+        log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, e)
+        return e
+    }
 }
 
 func (c *Client) fitBatchBySize(items []Bet, maxBytes int) ([]Bet, int, error) {
+    agID := 0
+    if id, err := strconv.Atoi(c.config.ID); err == nil {
+        agID = id
+    }
+
+    // probamos con n = len(items) hacia abajo hasta que el "body" textual entre en maxBytes
     for n := len(items); n > 0; n-- {
-        msg := BatchMsg{V: 1, Type: "bets_batch", Items: items[:n]}
-        data, err := json.Marshal(msg)
-        if err != nil {
-            return nil, 0, err
+        // tamaño del header textual del batch: "BATCH|<n>\n"
+        header := fmt.Sprintf("BATCH|%d\n", n)
+        size := len(header)
+
+        // sumar todas las líneas BET + '\n'
+        fits := true
+        for i := 0; i < n; i++ {
+            line := betLine(items[i], agID)
+            size += len(line) + 1 // + '\n'
+            if size > maxBytes {
+                fits = false
+                break
+            }
         }
-        if len(data) <= maxBytes {
-            return items[:n], len(data), nil
+        if fits {
+            return items[:n], size, nil // 'size' = bytes del body textual (sin contar los 4B del frame)
         }
     }
     return nil, 0, fmt.Errorf("single_too_large")
 }
 
 func (c *Client) sendBet(ctx context.Context, nombre, apellido, dni, nacimiento string, numero int) error {
-	// Armar payload
-	b := Bet{
-		V:          1,
-		Type:       "bet",
-		DNI:        dni,
-		Numero:     numero,
-		Nombre:     nombre,
-		Apellido:   apellido,
-		Nacimiento: nacimiento,
-	}
-	if id, err := strconv.Atoi(c.config.ID); err == nil {
-		b.AgenciaID = id
-	}
+    // 1) armar línea textual: BET|dni|numero|nombre|apellido|nacimiento|agencia_id
+    agID := 0
+    if id, err := strconv.Atoi(c.config.ID); err == nil {
+        agID = id
+    }
+    line := fmt.Sprintf("BET|%s|%d|%s|%s|%s|%d",
+        escape(dni),
+        numero,
+        escape(nombre),
+        escape(apellido),
+        escape(nacimiento),
+        agID,
+    )
 
-	data, err := json.Marshal(b)
-	if err != nil {
-		log.Errorf("action: send_bet | result: fail | step: json_marshal | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
+    // 2) enviar en un frame (4 bytes + payload textual con \n final)
+    payload := []byte(line + "\n")
+    _ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+    if err := writeFrame(c.conn, payload); err != nil {
+        if ctx.Err() != nil {
+            return ctx.Err()
+        }
+        log.Errorf("action: send_bet | result: fail | step: write_frame | client_id: %v | error: %v", c.config.ID, err)
+        return err
+    }
+    log.Infof("action: send_bet | result: success | step: write_full | client_id: %v | bytes: %d", c.config.ID, len(payload))
 
-	// Escritura con deadlines cortos
-	_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	if err := writeFrame(c.conn, data); err != nil {
-		if ctx.Err() != nil {
-			// cancelación por señal
-			return ctx.Err()
-		}
-		log.Errorf("action: send_bet | result: fail | step: write_frame | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
-	log.Infof("action: send_bet | result: success | step: write_full | client_id: %v | bytes: %d", c.config.ID, len(data))
+    // 3) leer ACK en un frame y parsear textual:
+    //    Formato éxito: ACK|OK|<dni>|<numero>
+    //    Formato error: ACK|FAIL|<code>|<reason>
+    _ = c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+    body, err := readFrame(c.conn, 16*1024)
+    if err != nil {
+        if ctx.Err() != nil {
+            return ctx.Err()
+        }
+        log.Errorf("action: receive_ack | result: fail | step: read_frame | client_id: %v | error: %v", c.config.ID, err)
+        return err
+    }
 
-	// Lectura del ACK con deadline
-	_ = c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	body, err := readFrame(c.conn, 16*1024)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		log.Errorf("action: receive_ack | result: fail | step: read_frame | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
+    // convertir body a línea
+    resp := strings.TrimSuffix(string(body), "\n")
+    parts := strings.Split(resp, "|")
+    if len(parts) < 2 || parts[0] != "ACK" {
+        e := fmt.Errorf("bad ack line: %q", resp)
+        log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, e)
+        return e
+    }
 
-	var ack Ack
-	if err := json.Unmarshal(body, &ack); err != nil {
-		log.Errorf("action: receive_ack | result: fail | step: json_unmarshal | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
-	if ack.Type != "ack" {
-		err := fmt.Errorf("unexpected ack type: %s", ack.Type)
-		log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
-	if !ack.OK {
-		err := fmt.Errorf("%s: %s", ack.Code, ack.Reason)
-		log.Errorf("action: receive_ack | result: fail | step: nack | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
+    switch parts[1] {
+    case "OK":
+        if len(parts) != 4 {
+            e := fmt.Errorf("bad ack ok fields: %q", resp)
+            log.Errorf("action: receive_ack | result: fail | step: bad_fields | client_id: %v | error: %v", c.config.ID, e)
+            return e
+        }
+        ackDNI := unescape(parts[2])
+        ackNum, convErr := strconv.Atoi(parts[3])
+        if convErr != nil {
+            log.Errorf("action: receive_ack | result: fail | step: parse_num | client_id: %v | value: %q | error: %v", c.config.ID, parts[3], convErr)
+            return convErr
+        }
+        log.Infof("action: receive_ack | result: success | client_id: %v | dni: %s | numero: %d", c.config.ID, ackDNI, ackNum)
+        return nil
 
-	log.Infof("action: receive_ack | result: success | client_id: %v | dni: %s | numero: %d", c.config.ID, ack.DNI, ack.Numero)
-	return nil
+    case "FAIL":
+        if len(parts) != 4 {
+            e := fmt.Errorf("bad ack fail fields: %q", resp)
+            log.Errorf("action: receive_ack | result: fail | step: bad_fields | client_id: %v | error: %v", c.config.ID, e)
+            return e
+        }
+        code := parts[2]
+        reason := unescape(parts[3])
+        e := fmt.Errorf("%s: %s", code, reason)
+        log.Errorf("action: receive_ack | result: fail | step: nack | client_id: %v | error: %v", c.config.ID, e)
+        return e
+
+    default:
+        e := fmt.Errorf("unexpected ack status: %s", parts[1])
+        log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, e)
+        return e
+    }
 }
 
 func (c *Client) getBetsFromCSV(path string) ([]Bet, error) {
@@ -308,4 +415,16 @@ func (c *Client) getBetsFromCSV(path string) ([]Bet, error) {
 
     log.Infof("action: load_dataset | result: success | path: %s | count: %d", path, len(out))
     return out, nil
+}
+
+func betLine(b Bet, agID int) string {
+    // BET|dni|numero|nombre|apellido|nacimiento|agencia_id
+    return fmt.Sprintf("BET|%s|%d|%s|%s|%s|%d",
+        escape(b.DNI),
+        b.Numero,
+        escape(b.Nombre),
+        escape(b.Apellido),
+        escape(b.Nacimiento),
+        agID,
+    )
 }
