@@ -5,6 +5,7 @@ import (
 	"net"
 	"time"
     "context"
+	"strings"
     "os/signal"
     "syscall"
 	"github.com/op/go-logging"
@@ -158,6 +159,7 @@ func (c *Client) StartClientLoop() {
 		return
 	}
 
+	// notificar fin de envío
 	if err := c.sendNotifyDone(ctx); err != nil {
 		log.Errorf("action: finish | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		_ = c.conn.Close()
@@ -167,20 +169,39 @@ func (c *Client) StartClientLoop() {
 	_ = c.conn.Close()
 	c.conn = nil
 
-	// consultar ganadores
-	if err := c.createClientSocket(); err != nil {
-		log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
-		return
+	// --- reintento silencioso de consulta de ganadores ---
+	agID := 0
+	if id, err := strconv.Atoi(c.config.ID); err == nil {
+		agID = id
 	}
-	agID, _ := strconv.Atoi(c.config.ID)
-	count, _, err := c.sendWinnersQuery(ctx, agID)
-	_ = c.conn.Close()
-	c.conn = nil
-	if err != nil {
+	for {
+		// abrir conexión por intento
+		if err := c.createClientSocket(); err != nil {
+			log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+			return
+		}
+
+		cnt, _, err := c.sendWinnersQuery(ctx, agID)
+
+		_ = c.conn.Close()
+		c.conn = nil
+
+		if err == nil {
+			// éxito: log pedido por el enunciado
+			log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %d", cnt)
+			break
+		}
+
+		// si el sorteo aún no está listo, reintentar sin loguear fail
+		if strings.HasPrefix(err.Error(), "NOT_READY") {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		// cualquier otro error sí se reporta como fail y se aborta
 		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return
 	}
-	log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %d", count)
 
     log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
 }
