@@ -34,19 +34,14 @@ def get_bet(client_sock, max_len: int = 16 * 1024):
 
         # Decode + JSON
         try:
-            text = payload.decode("utf-8")
+            line = payload.decode("utf-8")
         except UnicodeDecodeError as e:
             logging.error(f"action: receive_message | result: fail | step: utf8_decode | error: {e}")
             raise
 
-        try:
-            msg = json.loads(text)
-        except json.JSONDecodeError as e:
-            logging.error(f"action: receive_message | result: fail | step: json_decode | error: {e}")
-            raise
-
+        bet_obj = parse_bet_line(line)
         logging.info(f"action: receive_message | result: success | step: framed_read | length: {length}")
-        return msg
+        return bet_obj
 
     finally:
         # restaurar timeout original
@@ -55,38 +50,68 @@ def get_bet(client_sock, max_len: int = 16 * 1024):
         except Exception:
             pass
 
-def validate_bet(bet):
-    if bet.agency == '':
-        logging.error(f"action: validate_bet | result: fail | step: invalid_agency | agency: {bet.agency}")
-        raise ValueError(f"invalid agency number: {bet.agency}")
+def send_bet_ack_ok(client_sock, dni: str, numero: int):
+    # Formato textual: ACK|OK|<dni>|<numero>
+    line = f"ACK|OK|{_escape(dni)}|{numero}"
+    payload = line.encode("utf-8")
+    header = len(payload).to_bytes(4, byteorder="big")
+    client_sock.sendall(header + payload)
 
-    if bet.birthdate > datetime.date.today():
-        logging.error(f"action: validate_bet | result: fail | step: invalid_birthdate | birthdate: {bet.birthdate}")
-        raise ValueError(f"invalid birthdate: {bet.birthdate}")
+def send_bet_ack_fail(client_sock, code: str, reason: str):
+    # Formato textual: ACK|FAIL|<code>|<reason>
+    line = f"ACK|FAIL|{code}|{_escape(reason)}"
+    payload = line.encode("utf-8")
+    header = len(payload).to_bytes(4, byteorder="big")
+    client_sock.sendall(header + payload)
 
-    if bet.first_name == "" or bet.last_name == "":
-        logging.error(f"action: validate_bet | result: fail | step: invalid_name | first_name: {bet.first_name} | last_name: {bet.last_name}")
-        raise ValueError(f"invalid name: {bet.first_name} {bet.last_name}")
+def _escape(s: str) -> str:
+    return s.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n')
 
-    logging.info(f"action: validate_bet | result: success | bet: {bet}")
+def _unescape(s: str) -> str:
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == '\\' and i + 1 < len(s):
+            nxt = s[i+1]
+            if nxt == '\\':
+                out.append('\\'); i += 2; continue
+            if nxt == '|':
+                out.append('|'); i += 2; continue
+            if nxt == 'n':
+                out.append('\n'); i += 2; continue
+        out.append(s[i]); i += 1
+    return ''.join(out)
 
-    return True
+def parse_bet_line(line: str) -> "BetObj":
+    # Formato textual: BET|dni|numero|nombre|apellido|nacimiento|agencia_id
+    parts = line.split('|')
+    if len(parts) != 7 or parts[0] != 'BET':
+        raise ValueError(f'bad bet line: {line!r}')
+    dni        = _unescape(parts[1])
+    numero_str = parts[2]
+    nombre     = _unescape(parts[3])
+    apellido   = _unescape(parts[4])
+    nacimiento = _unescape(parts[5])
+    agencia_id = parts[6]
 
-def send_bet_confirmation(client_sock, bet):
     try:
-        ack = {
-            "v": 1,
-            "type": "ack",
-            "ok": True,
-            "dni": bet.get("dni"),
-            "numero": bet.get("numero"),
-        }
-        confirmation_msg = json.dumps(ack, ensure_ascii=False).encode("utf-8")
-        confirmation_header = len(confirmation_msg).to_bytes(4, byteorder="big", signed=False)
-        client_sock.sendall(confirmation_header + confirmation_msg)
-        logging.info(f'action: send_ack | result: success | dni: {ack["dni"]} | numero: {ack["numero"]}')
-    except Exception as e:
-        logging.error(f'action: send_ack | result: fail | error: {e}')
+        numero = int(numero_str)
+    except ValueError:
+        raise ValueError(f'bad numero: {numero_str!r}')
+    try:
+        agid = int(agencia_id)
+    except ValueError:
+        raise ValueError(f'bad agencia_id: {agencia_id!r}')
+
+    d = {
+        "dni": dni,
+        "numero": numero,
+        "nombre": nombre,
+        "apellido": apellido,
+        "nacimiento": nacimiento,
+        "agencia_id": agid,
+    }
+    return BetObj(d)
 
 class BetObj:
     def __init__(self, d):

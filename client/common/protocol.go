@@ -3,11 +3,14 @@ package common
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
 	"time"
+	"bufio"
+	"bytes"
+	"strings"
+	"unicode/utf8"
 )
 
 type Bet struct {
@@ -85,28 +88,14 @@ func readFrame(conn net.Conn, maxLen int) ([]byte, error) {
 	return readExact(conn, n)
 }
 
-
-
 func (c *Client) sendBet(ctx context.Context, nombre, apellido, dni, nacimiento string, numero int) error {
-	// Armar payload
-	b := Bet{
-		V:          1,
-		Type:       "bet",
-		DNI:        dni,
-		Numero:     numero,
-		Nombre:     nombre,
-		Apellido:   apellido,
-		Nacimiento: nacimiento,
-	}
+	// Armar línea textual
+	agID := 0
 	if id, err := strconv.Atoi(c.config.ID); err == nil {
-		b.AgenciaID = id
+		agID = id
 	}
-
-	data, err := json.Marshal(b)
-	if err != nil {
-		log.Errorf("action: send_bet | result: fail | step: json_marshal | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
+	line := encodeBetLine(nombre, apellido, dni, nacimiento, numero, agID)
+	data := []byte(line) // seguimos usando framing: mandamos la línea como payload
 
 	// Escritura con deadlines cortos
 	_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
@@ -115,7 +104,7 @@ func (c *Client) sendBet(ctx context.Context, nombre, apellido, dni, nacimiento 
 			// cancelación por señal
 			return ctx.Err()
 		}
-		log.Errorf("action: send_bet | result: fail | step: write_frame | client_id: %v | error: %v", c.config.ID, err)
+		log.Infof("action: send_bet | result: success | step: write_full | client_id: %v | bytes: %d", c.config.ID, len(data))
 		return err
 	}
 	log.Infof("action: send_bet | result: success | step: write_full | client_id: %v | bytes: %d", c.config.ID, len(data))
@@ -131,22 +120,135 @@ func (c *Client) sendBet(ctx context.Context, nombre, apellido, dni, nacimiento 
 		return err
 	}
 
-	var ack Ack
-	if err := json.Unmarshal(body, &ack); err != nil {
-		log.Errorf("action: receive_ack | result: fail | step: json_unmarshal | client_id: %v | error: %v", c.config.ID, err)
-		return err
+	ok, adni, anum, code, reason, perr := parseAckLine(string(body))
+	if perr != nil {
+		log.Errorf("action: receive_ack | result: fail | step: parse_ack | client_id: %v | error: %v", c.config.ID, perr)
+		return perr
 	}
-	if ack.Type != "ack" {
-		err := fmt.Errorf("unexpected ack type: %s", ack.Type)
-		log.Errorf("action: receive_ack | result: fail | step: bad_type | client_id: %v | error: %v", c.config.ID, err)
-		return err
-	}
-	if !ack.OK {
-		err := fmt.Errorf("%s: %s", ack.Code, ack.Reason)
+	if !ok {
+		err := fmt.Errorf("%s: %s", code, reason)
 		log.Errorf("action: receive_ack | result: fail | step: nack | client_id: %v | error: %v", c.config.ID, err)
 		return err
 	}
-
-	log.Infof("action: receive_ack | result: success | client_id: %v | dni: %s | numero: %d", c.config.ID, ack.DNI, ack.Numero)
+	log.Infof("action: receive_ack | result: success | client_id: %v | dni: %s | numero: %d", c.config.ID, adni, anum)
 	return nil
+}
+
+// escape: convierte |, \n y \ en secuencias escapadas para el protocolo textual
+func escape(s string) string {
+    s = strings.ReplaceAll(s, `\`, `\\`)
+    s = strings.ReplaceAll(s, `|`, `\|`)
+    s = strings.ReplaceAll(s, "\n", `\n`)
+    return s
+}
+
+// writeLine: escribe una línea (con \n final) asegurando short-write safe
+func writeLine(conn net.Conn, line string) error {
+    if !strings.HasSuffix(line, "\n") {
+        line += "\n"
+    }
+    b := []byte(line)
+    written := 0
+    for written < len(b) {
+        n, err := conn.Write(b[written:])
+        if err != nil {
+            return err
+        }
+        written += n
+    }
+    return nil
+}
+
+// readLine: lee hasta '\n' (maneja short-reads)
+func readLine(conn net.Conn) (string, error) {
+    r := bufio.NewReader(conn)
+    line, err := r.ReadBytes('\n')
+    if err != nil {
+        return "", err
+    }
+    // quitamos el '\n' final si está
+    line = bytes.TrimSuffix(line, []byte{'\n'})
+    return string(line), nil
+}
+
+// unescape: revierte \|, \n y \\ a sus valores reales
+func unescape(s string) string {
+	// Recorremos rune por rune para soportar UTF-8 (nombres con acentos).
+	out := make([]rune, 0, len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == '\\' {
+			// Mirar el siguiente
+			if i+size < len(s) {
+				r2, size2 := utf8.DecodeRuneInString(s[i+size:])
+				switch r2 {
+				case '\\':
+					out = append(out, '\\')
+					i += size + size2
+					continue
+				case '|':
+					out = append(out, '|')
+					i += size + size2
+					continue
+				case 'n':
+					out = append(out, '\n')
+					i += size + size2
+					continue
+				}
+			}
+			// Backslash suelto: lo conservamos
+			out = append(out, r)
+			i += size
+			continue
+		}
+		out = append(out, r)
+		i += size
+	}
+	return string(out)
+}
+
+// encodeBetLine: serializa una apuesta en línea de texto sin JSON.
+// Formato: BET|dni|numero|nombre|apellido|nacimiento|agencia_id
+func encodeBetLine(nombre, apellido, dni, nacimiento string, numero, agenciaID int) string {
+	fields := []string{
+		"BET",
+		escape(dni),
+		strconv.Itoa(numero),
+		escape(nombre),
+		escape(apellido),
+		escape(nacimiento),
+		strconv.Itoa(agenciaID),
+	}
+	return strings.Join(fields, "|")
+}
+
+// parseAckLine: parsea una respuesta de ACK textual.
+// OK:    "ACK|OK|<dni>|<numero>"
+// ERROR: "ACK|FAIL|<code>|<reason>"
+func parseAckLine(line string) (ok bool, dni string, numero int, code, reason string, err error) {
+	parts := strings.Split(line, "|")
+	if len(parts) < 2 || parts[0] != "ACK" {
+		return false, "", 0, "", "", fmt.Errorf("bad ack: %q", line)
+	}
+	switch parts[1] {
+	case "OK":
+		if len(parts) != 4 {
+			return false, "", 0, "", "", fmt.Errorf("bad ack OK shape: %q", line)
+		}
+		dni = unescape(parts[2])
+		n, convErr := strconv.Atoi(parts[3])
+		if convErr != nil {
+			return false, "", 0, "", "", convErr
+		}
+		return true, dni, n, "", "", nil
+	case "FAIL":
+		if len(parts) < 4 {
+			return false, "", 0, "", "", fmt.Errorf("bad ack FAIL shape: %q", line)
+		}
+		code = parts[2]
+		reason = unescape(parts[3])
+		return false, "", 0, code, reason, nil
+	default:
+		return false, "", 0, "", "", fmt.Errorf("bad ack type: %q", parts[1])
+	}
 }
