@@ -1,7 +1,7 @@
 import socket
 import logging
 import signal
-from common.protocol import get_bet, send_bet_confirmation, send_batch_ack_fail, send_batch_ack_success
+from common.protocol import get_bet, send_bet_confirmation, send_batch_ack_fail, send_batch_ack_success, send_finish_ack, send_winners_ok, send_winners_fail
 from common.utils import Bet, load_bets, store_bets, has_won
 
 class Server:
@@ -16,6 +16,8 @@ class Server:
         self._finished = set()
         self._draw_done = False
         self._winners_ready = False
+        self._winners_by_agency = {}
+        self._required_agencies = 5  # consigna: esperar 5 agencias
         signal.signal(signal.SIGTERM, self.__signal_handler)
 
     def run(self):
@@ -37,36 +39,31 @@ class Server:
 
 
             if msg_type == "finish":
-                try:
-                    agency_id = int(payload)  # el notify trae la agencia
-                except Exception:
-                    agency_id = None
+                agency_id = int(payload)
+                self._finished.add(agency_id)
+                logging.info(f'action: finish | result: success | agency: {agency_id} | total_agencias_listas: {len(self._finished)}')
 
-                if agency_id is not None:
-                    self._finished.add(agency_id)
-                    logging.info(f'action: finish | result: success | agency: {agency_id} | total_agencias_listas: {len(self._finished)}')
-                else:
-                    logging.error('action: finish | result: fail | step: parse_agency')
+                # ACK del notify
+                send_finish_ack(client_sock)
 
-                # ACK opcional (recomendado)
-                try:
-                    from common.protocol import send_finish_ack
-                    send_finish_ack(client_sock)
-                except Exception:
-                    pass
-
-                # ¿ya terminaron las 5?
-                if not self._draw_done and len(self._finished) >= 5:
-                    # cargar apuestas y marcar sorteo listo
+                # ¿todas listas?
+                if not self._draw_done and len(self._finished) >= self._required_agencies:
                     try:
-                        # No hace falta guardar en memoria aún; con log alcanza para el test de "sorteo".
-                        logging.info('action: sorteo | result: success')
+                        bets = load_bets()
+                        winners = {}
+                        for b in bets:
+                            try:
+                                if has_won(b):
+                                    winners.setdefault(b.agency, []).append(b.document)
+                            except Exception as e:
+                                logging.error(f'action: sorteo | step: eval_bet | result: fail | error: {e}')
+                        self._winners_by_agency = winners
                         self._draw_done = True
-                        self._winners_ready = True  # listo para responder ganadores (lo vemos en el siguiente paso)
+                        self._winners_ready = True
+                        logging.info('action: sorteo | result: success')
                     except Exception as e:
                         logging.error(f'action: sorteo | result: fail | error: {e}')
-
-                return  # terminamos el manejo de este cliente (solo venía a notificar)
+                return
 
             elif msg_type == "batch":
                 items = payload
@@ -90,6 +87,15 @@ class Server:
                 except Exception as e:
                     logging.error(f'action: apuesta_recibida | result: fail | cantidad: {n} | error: {e}')
                     send_batch_ack_fail(client_sock, n, code="STORE_FAILED", reason=str(e))
+                return
+
+            elif msg_type == "winners_query":
+                agency_id = int(payload)
+                if not self._winners_ready:
+                    send_winners_fail(client_sock, "NOT_READY", "sorteo no realizado")
+                else:
+                    dnis = self._winners_by_agency.get(agency_id, [])
+                    send_winners_ok(client_sock, dnis)
                 return
 
             else:

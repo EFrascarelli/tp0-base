@@ -456,3 +456,55 @@ func (c *Client) sendNotifyDone(ctx context.Context) error {
     log.Infof("action: notify_done | result: success | client_id: %v", c.config.ID)
     return nil
 }
+
+// sendWinnersQuery envía WINQ|<agencia_id> y espera WRES|OK|<count>|dni1,dni2,...
+func (c *Client) sendWinnersQuery(ctx context.Context, agencyID int) (int, []string, error) {
+	line := fmt.Sprintf("WINQ|%d", agencyID)
+	payload := []byte(line)
+
+	_ = c.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if err := writeFrame(c.conn, payload); err != nil {
+		return 0, nil, err
+	}
+
+	_ = c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	body, err := readFrame(c.conn, 16*1024)
+	if err != nil {
+		if ctx.Err() != nil {
+			return 0, nil, ctx.Err()
+		}
+		return 0, nil, err
+	}
+
+	resp := string(body)
+	parts := strings.SplitN(resp, "|", 4) // WRES|OK|<count>|<csv>
+	if len(parts) < 3 || parts[0] != "WRES" {
+		return 0, nil, fmt.Errorf("bad winners response: %q", resp)
+	}
+	if parts[1] != "OK" {
+		// formato de error: WRES|FAIL|<code>|<reason>
+		code := ""
+		reason := ""
+		if len(parts) >= 3 {
+			code = parts[2]
+		}
+		if len(parts) >= 4 {
+			reason = parts[3]
+		}
+		return 0, nil, fmt.Errorf("%s: %s", code, reason)
+	}
+
+	// OK
+	count, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return 0, nil, fmt.Errorf("bad winners count: %v", err)
+	}
+
+	var winners []string
+	if len(parts) == 4 && parts[3] != "" {
+		// csv de DNIs (sin espacios)
+		winners = strings.Split(parts[3], ",")
+	}
+
+	return count, winners, nil
+}

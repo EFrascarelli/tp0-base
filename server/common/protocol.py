@@ -66,6 +66,18 @@ def get_bet(client_sock, max_len: int = 16 * 1024):
         head = lines[0].split('|')
         kind = head[0]
 
+        # NOTIFY|DONE|<agency_id>
+        if kind == 'NOTIFY' and len(head) == 3 and head[1] == 'DONE':
+            agid = int(head[2])
+            logging.info(f"action: receive_message | result: success | step: notify_done | agency: {agid}")
+            return ("finish", agid)
+
+        # WINQ|<agency_id>
+        if kind == 'WINQ' and len(head) == 2:
+            agid = int(head[1])
+            logging.info(f"action: receive_message | result: success | step: winners_query | agency: {agid}")
+            return ("winners_query", agid)
+
         if kind == 'BET':
             bet = _parse_bet_line(lines[0])
             logging.info(f"action: receive_message | result: success | step: framed_read | length: {length}")
@@ -130,13 +142,46 @@ def send_batch_ack_fail(client_sock, count: int, code: str, reason: str) -> None
 
 def send_finish_ack(client_sock):
     try:
-        line = "ACKF|OK"
+        line = "ACKN|OK\n"
         payload = line.encode("utf-8")
         header = len(payload).to_bytes(4, "big", signed=False)
         client_sock.sendall(header + payload)
-        logging.info('action: send_ack | result: success | type: ack_finish')
+        logging.info('action: send_ack | result: success | type: ack_notify_done')
     except Exception as e:
-        logging.error(f'action: send_ack | result: fail | type: ack_finish | error: {e}')
+        logging.error(f'action: send_ack | result: fail | type: ack_notify_done | error: {e}')
+
+def send_winners_ok(client_sock, winners):
+    """
+    Respuesta éxito a consulta de ganadores:
+      WRES|OK|<count>|dni1,dni2,...
+    (si count=0, se omite la 4ta parte)
+    """
+    try:
+        count = len(winners)
+        if count > 0:
+            line = f"WRES|OK|{count}|{','.join(winners)}"
+        else:
+            line = f"WRES|OK|0"
+        payload = line.encode("utf-8")
+        header = len(payload).to_bytes(4, "big", signed=False)
+        client_sock.sendall(header + payload)
+        logging.info(f'action: send_winners | result: success | count: {count}')
+    except Exception as e:
+        logging.error(f'action: send_winners | result: fail | error: {e}')
+
+def send_winners_fail(client_sock, code, reason):
+    """
+    Respuesta error a consulta de ganadores:
+      WRES|FAIL|<code>|<reason>
+    """
+    try:
+        line = f"WRES|FAIL|{_escape(code)}|{_escape(reason)}"
+        payload = line.encode("utf-8")
+        header = len(payload).to_bytes(4, "big", signed=False)
+        client_sock.sendall(header + payload)
+        logging.info(f'action: send_winners | result: success | step: nack_sent | code: {code}')
+    except Exception as e:
+        logging.error(f'action: send_winners | result: fail | error: {e}')
 
 def _escape(s: str) -> str:
     return s.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n')

@@ -158,7 +158,7 @@ func (c *Client) StartClientLoop() {
 		return
 	}
 
-	if err := c.notifyDone(ctx); err != nil {
+	if err := c.sendNotifyDone(ctx); err != nil {
 		log.Errorf("action: finish | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		_ = c.conn.Close()
 		c.conn = nil
@@ -166,6 +166,21 @@ func (c *Client) StartClientLoop() {
 	}
 	_ = c.conn.Close()
 	c.conn = nil
+
+	// consultar ganadores
+	if err := c.createClientSocket(); err != nil {
+		log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+	agID, _ := strconv.Atoi(c.config.ID)
+	count, _, err := c.sendWinnersQuery(ctx, agID)
+	_ = c.conn.Close()
+	c.conn = nil
+	if err != nil {
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+	log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %d", count)
 
     log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
 }
