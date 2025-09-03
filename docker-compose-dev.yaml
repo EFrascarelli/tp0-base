@@ -8,7 +8,7 @@ services:
       - ./server/config.ini:/config.ini
     environment:
       - PYTHONUNBUFFERED=1
-      - REQUIRED_AGENCIES=3
+      - REQUIRED_AGENCIES=5
       - LOGGING_LEVEL=DEBUG
     networks:
       - testing_net
@@ -52,6 +52,36 @@ services:
       - ./.data:/data:ro
     environment:
       - CLI_ID=3
+      - CLI_LOG_LEVEL=INFO
+    networks:
+      - testing_net
+    depends_on:
+      - server
+
+  client4:
+    container_name: client4
+    image: client:latest
+    entrypoint: /client
+    volumes:
+      - ./client/config.yaml:/config.yaml
+      - ./.data:/data:ro
+    environment:
+      - CLI_ID=4
+      - CLI_LOG_LEVEL=INFO
+    networks:
+      - testing_net
+    depends_on:
+      - server
+
+  client5:
+    container_name: client5
+    image: client:latest
+    entrypoint: /client
+    volumes:
+      - ./client/config.yaml:/config.yaml
+      - ./.data:/data:ro
+    environment:
+      - CLI_ID=5
       - CLI_LOG_LEVEL=INFO
     networks:
       - testing_net
