@@ -1,8 +1,8 @@
 import socket
 import logging
 import signal
-from server.common.protocol import get_bet, send_bet_ack_ok, send_bet_ack_fail, BetObj
-from common.utils import load_bets, store_bets, has_won
+from common.protocol import get_bet, send_bet_ack_ok, send_bet_ack_fail
+from common.utils import load_bets, store_bets, has_won, Bet
 
 class Server:
     def __init__(self, port, listen_backlog):
@@ -27,19 +27,16 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         try:
-            # TODO: Modify the receive to avoid short-reads
-
-
             bet = get_bet(client_sock)
             addr = client_sock.getpeername()
             
-            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | bet: {bet}')
+            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | bet: {bet.document} | numero: {bet.number}')
 
             try:
-                store_bets([BetObj(bet)])
-                logging.info(f'action: apuesta_almacenada | result: success | dni: {bet["dni"]} | numero: {bet["numero"]}')
+                store_bets([bet])
+                logging.info(f'action: apuesta_almacenada | result: success | dni: {bet.document} | numero: {bet.number}')
             except Exception as e:
-                logging.error(f'action: apuesta_almacenada | result: fail | dni: {bet.get("dni")} | numero: {bet.get("numero")} | error: {e}')
+                logging.error(f'action: apuesta_almacenada | result: fail | dni: {bet.document} | numero: {bet.number} | error: {e}')
                 send_bet_ack_fail(client_sock, "STORE_ERR", str(e))
 
                 return

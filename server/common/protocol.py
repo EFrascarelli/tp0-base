@@ -1,6 +1,7 @@
 from datetime import datetime
 import json
 import logging
+from common.utils import Bet
 
 def _recv_n_bytes(sock, n: int) -> bytes:
     """Lee exactamente n bytes del socket (reintentando hasta completar)."""
@@ -82,11 +83,12 @@ def _unescape(s: str) -> str:
         out.append(s[i]); i += 1
     return ''.join(out)
 
-def parse_bet_line(line: str) -> "BetObj":
+def parse_bet_line(line: str) -> "Bet":
     # Formato textual: BET|dni|numero|nombre|apellido|nacimiento|agencia_id
     parts = line.split('|')
     if len(parts) != 7 or parts[0] != 'BET':
         raise ValueError(f'bad bet line: {line!r}')
+    
     dni        = _unescape(parts[1])
     numero_str = parts[2]
     nombre     = _unescape(parts[3])
@@ -103,21 +105,12 @@ def parse_bet_line(line: str) -> "BetObj":
     except ValueError:
         raise ValueError(f'bad agencia_id: {agencia_id!r}')
 
-    d = {
-        "dni": dni,
-        "numero": numero,
-        "nombre": nombre,
-        "apellido": apellido,
-        "nacimiento": nacimiento,
-        "agencia_id": agid,
-    }
-    return BetObj(d)
-
-class BetObj:
-    def __init__(self, d):
-        self.document = d.get("dni")
-        self.number = d.get("numero")
-        self.first_name = d.get("nombre")
-        self.last_name = d.get("apellido")
-        self.birthdate = d.get("nacimiento")
-        self.agency = d.get("agencia_id")
+    # Crear un Bet directamente
+    return Bet(
+        agency=agid,
+        first_name=nombre,
+        last_name=apellido,
+        document=dni,
+        birthdate=nacimiento,
+        number=numero,
+    )
