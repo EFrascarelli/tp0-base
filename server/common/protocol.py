@@ -1,15 +1,5 @@
 from datetime import datetime
-import json
 import logging
-
-class BetObj:
-    def __init__(self, d):
-        self.document = d.get("dni")
-        self.number = d.get("numero")
-        self.first_name = d.get("nombre")
-        self.last_name = d.get("apellido")
-        self.birthdate = d.get("nacimiento")
-        self.agency = d.get("agencia_id")
 
 def _recv_n_bytes(sock, n: int) -> bytes:
     """Lee exactamente n bytes del socket (reintentando hasta completar)."""
@@ -41,21 +31,60 @@ def get_bet(client_sock, max_len: int = 16 * 1024):
         # Body (len bytes)
         payload = _recv_n_bytes(client_sock, length)
 
-        # Decode + JSON
+        # Decode + protocolo textual (BET|... o BATCH|N + N líneas BET|...)
         try:
             text = payload.decode("utf-8")
         except UnicodeDecodeError as e:
             logging.error(f"action: receive_message | result: fail | step: utf8_decode | error: {e}")
             raise
 
-        try:
-            msg = json.loads(text)
-        except json.JSONDecodeError as e:
-            logging.error(f"action: receive_message | result: fail | step: json_decode | error: {e}")
-            raise
+        lines = text.splitlines()
+        if not lines:
+            raise ValueError("empty payload")
 
-        logging.info(f"action: receive_message | result: success | step: framed_read | length: {length}")
-        return msg
+        head = lines[0].split('|')
+        kind = head[0]
+
+        def _parse_bet_line(line: str) -> dict:
+            parts = line.split('|')
+            if len(parts) != 7 or parts[0] != 'BET':
+                raise ValueError(f'bad bet line: {line!r}')
+            document        = _unescape(parts[1])
+            number_str = parts[2]
+            first_name     = _unescape(parts[3])
+            last_name   = _unescape(parts[4])
+            birthdate = _unescape(parts[5])
+            agency_id = parts[6]
+            number = int(number_str)
+            agid   = int(agency_id)
+            return {
+                "document": document,
+                "number": number,
+                "first_name": first_name,
+                "last_name": last_name,
+                "birthdate": birthdate,
+                "agency": agid,
+            }
+
+        if kind == 'BET':
+            bet = _parse_bet_line(lines[0])
+            logging.info(f"action: receive_message | result: success | step: framed_read | length: {length}")
+            # devolvemos un “sobre” textual: (tipo, payload)
+            return ("bet", bet)
+
+        if kind == 'BATCH':
+            if len(head) != 2:
+                raise ValueError(f'bad batch header: {lines[0]!r}')
+            n = int(head[1])
+            if len(lines) - 1 != n:
+                raise ValueError(f'batch count mismatch: header={n} lines={len(lines)-1}')
+            items = []
+            for i in range(1, len(lines)):
+                items.append(_parse_bet_line(lines[i]))
+            logging.info(f"action: receive_message | result: success | step: framed_read | length: {length}")
+            return ("batch", items)
+
+        raise ValueError(f'unknown message type: {kind!r}')
 
     finally:
         # restaurar timeout original
@@ -64,64 +93,52 @@ def get_bet(client_sock, max_len: int = 16 * 1024):
         except Exception:
             pass
 
-def validate_bet(bet):
-    if bet.agency == '':
-        logging.error(f"action: validate_bet | result: fail | step: invalid_agency | agency: {bet.agency}")
-        raise ValueError(f"invalid agency number: {bet.agency}")
-
-    if bet.birthdate > datetime.date.today():
-        logging.error(f"action: validate_bet | result: fail | step: invalid_birthdate | birthdate: {bet.birthdate}")
-        raise ValueError(f"invalid birthdate: {bet.birthdate}")
-
-    if bet.first_name == "" or bet.last_name == "":
-        logging.error(f"action: validate_bet | result: fail | step: invalid_name | first_name: {bet.first_name} | last_name: {bet.last_name}")
-        raise ValueError(f"invalid name: {bet.first_name} {bet.last_name}")
-
-    logging.info(f"action: validate_bet | result: success | bet: {bet}")
-
-    return True
-
 def send_bet_confirmation(client_sock, bet):
+    """
+    ACK individual textual: ACK|OK|<dni>|<numero>
+    """
     try:
-        ack = {
-            "v": 1,
-            "type": "ack",
-            "ok": True,
-            "dni": bet.get("dni"),
-            "numero": bet.get("numero"),
-        }
-        confirmation_msg = json.dumps(ack, ensure_ascii=False).encode("utf-8")
-        confirmation_header = len(confirmation_msg).to_bytes(4, byteorder="big", signed=False)
-        client_sock.sendall(confirmation_header + confirmation_msg)
-        logging.info(f'action: send_ack | result: success | dni: {ack["dni"]} | numero: {ack["numero"]}')
+        dni = bet.get("document")
+        numero = bet.get("number")
+        line = f"ACK|OK|{_escape(dni)}|{int(numero)}"
+        payload = line.encode("utf-8")
+        header = len(payload).to_bytes(4, "big", signed=False)
+        client_sock.sendall(header + payload)
+        logging.info(f'action: send_ack | result: success | dni: {dni} | numero: {numero}')
     except Exception as e:
         logging.error(f'action: send_ack | result: fail | error: {e}')
 
 def send_batch_ack_success(client_sock, count: int) -> None:
-    """
-    Envía ACK de batch exitoso:
-      {"v":1,"type":"ack_batch","ok":true,"count":N}
-    """
-    ack = {"v": 1, "type": "ack_batch", "ok": True, "count": count}
-    payload = json.dumps(ack, ensure_ascii=False).encode("utf-8")
-    header = len(payload).to_bytes(4, "big", signed=False)
-    client_sock.sendall(header + payload)
-    logging.info(f'action: send_ack | result: success | type: ack_batch | count: {count}')
+    try:
+        line = f"ACKB|OK|{int(count)}"
+        payload = line.encode("utf-8")
+        header = len(payload).to_bytes(4, "big", signed=False)
+        client_sock.sendall(header + payload)
+        logging.info(f'action: send_ack | result: success | type: ack_batch | count: {count}')
+    except Exception as e:
+        logging.error(f'action: send_ack | result: fail | type: ack_batch | error: {e}')
 
 def send_batch_ack_fail(client_sock, count: int, code: str, reason: str) -> None:
-    """
-    Envía NACK de batch:
-      {"v":1,"type":"ack_batch","ok":false,"count":N,"code":"...","reason":"..."}
-    """
-    ack = {
-        "v": 1,
-        "type": "ack_batch",
-        "ok": False,
-        "count": count,
-        "code": code,
-        "reason": reason,
-    }
-    payload = json.dumps(ack, ensure_ascii=False).encode("utf-8")
-    header = len(payload).to_bytes(4, "big", signed=False)
-    client_sock.sendall(header + payload)
-    logging.info(f'action: send_ack | result: success | type: ack_batch | count: {count} | step: nack_sent')
+    try:
+        line = f"ACKB|FAIL|{_escape(code)}|{_escape(reason)}"
+        payload = line.encode("utf-8")
+        header = len(payload).to_bytes(4, "big", signed=False)
+        client_sock.sendall(header + payload)
+        logging.info(f'action: send_ack | result: success | type: ack_batch | count: {count} | step: nack_sent')
+    except Exception as e:
+        logging.error(f'action: send_ack | result: fail | type: ack_batch | error: {e}')
+
+def _escape(s: str) -> str:
+    return s.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n')
+
+def _unescape(s: str) -> str:
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == '\\' and i + 1 < len(s):
+            nxt = s[i+1]
+            if nxt == '\\': out.append('\\'); i += 2; continue
+            if nxt == '|':  out.append('|');  i += 2; continue
+            if nxt == 'n':  out.append('\n'); i += 2; continue
+        out.append(s[i]); i += 1
+    return ''.join(out)

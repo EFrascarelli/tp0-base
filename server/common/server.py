@@ -1,8 +1,8 @@
 import socket
 import logging
 import signal
-from common.protocol import get_bet, validate_bet, send_bet_confirmation, BetObj, send_batch_ack_fail, send_batch_ack_success
-from common.utils import load_bets, store_bets, has_won
+from common.protocol import get_bet, send_bet_confirmation, send_batch_ack_fail, send_batch_ack_success
+from common.utils import Bet, load_bets, store_bets, has_won
 
 class Server:
 
@@ -28,18 +28,26 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         try:
-            received_bet = get_bet(client_sock)
+            msg_type, payload = get_bet(client_sock)
             addr = client_sock.getpeername()
-            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | bet: {received_bet}')
+            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | msg_type: {msg_type}')
 
-            mtype = received_bet.get("type", "")
-
-            if mtype == "bets_batch":
-                items = received_bet.get("items", [])
+            if msg_type == "batch":
+                items = payload 
                 n = len(items)
 
                 try:
-                    bets = [BetObj(it) for it in items]           # mapear a atributos que espera store_bets
+                    bets = [
+                        Bet(
+                            document=it.get("document"),
+                            number=it.get("number"),
+                            first_name=it.get("first_name"),
+                            last_name=it.get("last_name"),
+                            birthdate=it.get("birthdate"),
+                            agency=it.get("agency"),
+                        )
+                        for it in items
+                    ]           # mapear a atributos que espera store_bets
                     store_bets(bets)                               # persistir TODAS juntas (todo-o-nada)
                     logging.info(f'action: apuesta_recibida | result: success | cantidad: {n}')
                     send_batch_ack_success(client_sock, n)
@@ -49,16 +57,24 @@ class Server:
                 return
 
             else:
+                bet_dict = payload
                 try:
-                    store_bets([BetObj(received_bet)])
-                    logging.info(f'action: apuesta_almacenada | result: success | dni: {received_bet["dni"]} | numero: {received_bet["numero"]}')
+                    bet = Bet(
+                        bet_dict.get("agency"),
+                        bet_dict.get("first_name"),
+                        bet_dict.get("last_name"),
+                        bet_dict.get("document"),
+                        bet_dict.get("birthdate"),
+                        bet_dict.get("number"),
+                    )
+                    store_bets([bet])
+                    logging.info(f'action: apuesta_almacenada | result: success | dni: {bet_dict["document"]} | numero: {bet_dict["number"]}')
                 except Exception as e:
-                    logging.error(f'action: apuesta_almacenada | result: fail | dni: {received_bet.get("dni")} | numero: {received_bet.get("numero")} | error: {e}')
-                    # si preferís, podés enviar NACK individual aquí; no es requerido para Ej.6
+                    logging.error(f'action: apuesta_almacenada | result: fail | dni: {bet_dict.get("document")} | numero: {bet_dict.get("number")} | error: {e}')
                     return
 
                 # ACK individual (mantener lo que ya tenías)
-                send_bet_confirmation(client_sock, received_bet)
+                send_bet_confirmation(client_sock, bet_dict)
         except OSError as e:
             logging.error(f'action: receive_message | result: fail | error: {e}')
         finally:
