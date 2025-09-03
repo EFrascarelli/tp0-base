@@ -19,6 +19,7 @@ class Server:
         self._winners_ready = False
         self._winners_by_agency = {}
         self._required_agencies = int(os.environ.get("REQUIRED_AGENCIES", "5"))
+        logging.info(f'action: server_start | result: success | port: {port} | required_agencies: {self._required_agencies}')
         signal.signal(signal.SIGTERM, self.__signal_handler)
 
     def run(self):
