@@ -18,7 +18,7 @@ services:
     entrypoint: /client
     volumes:
       - ./client/config.yaml:/config.yaml
-      - ./.data/dataset/agency-1.csv:/data/agency-1.csv:ro
+      - ./.data:/data:ro
     environment:
       - CLI_ID=1
       - CLI_LOG_LEVEL=INFO
