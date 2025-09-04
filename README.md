@@ -178,3 +178,53 @@ Se espera que se redacte una sección del README en donde se indique cómo ejecu
 Se proveen [pruebas automáticas](https://github.com/7574-sistemas-distribuidos/tp0-tests) de caja negra. Se exige que la resolución de los ejercicios pase tales pruebas, o en su defecto que las discrepancias sean justificadas y discutidas con los docentes antes del día de la entrega. El incumplimiento de las pruebas es condición de desaprobación, pero su cumplimiento no es suficiente para la aprobación. Respetar las entradas de log planteadas en los ejercicios, pues son las que se chequean en cada uno de los tests.
 
 La corrección personal tendrá en cuenta la calidad del código entregado y casos de error posibles, se manifiesten o no durante la ejecución del trabajo práctico. Se pide a los alumnos leer atentamente y **tener en cuenta** los criterios de corrección informados  [en el campus](https://campusgrado.fi.uba.ar/mod/page/view.php?id=73393).
+
+---
+
+# Parte 3: Repaso de Concurrencia
+
+En esta sección se aborda el **Ejercicio 8**, cuyo objetivo es modificar el servidor para que acepte conexiones y procese mensajes en paralelo.
+
+
+## Ejercicio 8: Concurrencia en el Servidor
+
+### Descripción
+El servidor fue extendido para soportar concurrencia mediante **multithreading**.  
+Cada vez que un cliente se conecta, se crea un nuevo hilo dedicado a procesar sus mensajes, mientras el servidor principal continúa aceptando nuevas conexiones.
+
+Esto asegura que múltiples clientes puedan enviar apuestas, notificar finalización y consultar ganadores al mismo tiempo, sin que las operaciones se bloqueen mutuamente.
+
+### Mecanismos de sincronización
+Dado que la persistencia de las apuestas (`store_bets`, `load_bets`) accede a recursos compartidos, se incorporaron mecanismos de **locks (threading.Lock)** para proteger secciones críticas.  
+De esta forma, se evita la corrupción de datos o condiciones de carrera.
+
+## Multithreading
+En este ejercicio la concurrencia del servidor se resolvió utilizando threading en Python. Si bien el lenguaje cuenta con el Global Interpreter Lock (GIL), que limita la ejecución paralela de bytecode puro de Python, este TP se centra en un escenario de I/O bound (aceptar conexiones y procesar mensajes por sockets). En estos casos, el GIL no representa un obstáculo, porque cada vez que un thread queda bloqueado en operaciones de red, el intérprete libera el lock y permite que otros threads avancen. Por lo tanto, el uso de hilos resulta válido y suficiente para lograr concurrencia en este contexto, cumpliendo las condiciones del TP sin necesidad de procesos adicionales ni librerías externas.
+
+### Decisiones tomadas
+- Se utilizó el módulo estándar `threading` de Python para el manejo de concurrencia.
+- Se creó un archivo auxiliar `threading_tools.py` que encapsula las funciones de ejecución segura con locks, facilitando la reutilización y la limpieza del código.
+- En la clase `Server`, cada conexión aceptada se delega a un hilo usando `threading.Thread(target=..., daemon=True)`.
+- Se decidió mantener un lock global para operaciones críticas sobre la persistencia en lugar de múltiples locks, priorizando la simplicidad.
+
+### Logs de ejemplo
+**Éxito en ejecución concurrente:**
+```text
+server   | action: accept_connections | result: success | ip: 172.25.125.4
+server   | action: receive_message | result: success | ip: 172.25.125.4 | msg_type: batch
+server   | action: apuesta_recibida | result: success | cantidad: 10
+server   | action: sorteo | result: success
+```
+
+**Error controlado en sección crítica:**
+```text
+server   | action: sorteo | step: eval_bet | result: fail | error: invalid birthdate format
+```
+
+### Ejecución
+Para levantar el entorno concurrente:
+```bash
+make docker-compose-up
+```
+
+Esto iniciará servidor y clientes en paralelo, validando que el servidor pueda procesar múltiples conexiones de forma concurrente.
