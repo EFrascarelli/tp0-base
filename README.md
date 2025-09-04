@@ -20,8 +20,6 @@ Esto levanta los contenedores definidos en el docker-compose.yaml, inyecta las c
 - [Parte 1: Introducción a Docker](#parte-1-introducción-a-docker)
   - [Ejercicio 1: Script generar-compose.sh](#ejercicio-1-script-generar-composesh)
   - [Ejercicio 2: Configuración inyectada con volúmenes](#ejercicio-2-configuración-inyectada-con-volúmenes)
-  - [Ejercicio 3: Script validar-echo-server.sh](#ejercicio-3-script-validar-echo-serversh)
-  - [Ejercicio 4: Finalización graceful con SIGTERM](#ejercicio-4-finalización-graceful-con-sigterm)
 
 
 ## Parte 1 – Introducción a Docker
@@ -58,46 +56,3 @@ De esta forma, cualquier cambio en los parámetros (ej. logging level, batch siz
 
 ### Decisiones
 •	Evité .env cuando la clave ya existe en archivo de config, para no tener fuentes de config en conflicto.
-
-
----
-
-### Ejercicio 3 – Validación con Echo Server
-Se desarrolló el script `validar-echo-server.sh`, que permite verificar el correcto funcionamiento del servidor en modo echo utilizando `netcat`.  
-El script corre dentro de la red de Docker (sin exponer puertos al host).  
-
-**Ejemplo de uso**:
-```bash
-./validar-echo-server.sh
-```
-
-**Salida esperada**:
-```
-action: test_echo_server | result: success
-```
-
-En caso de error:
-```
-action: test_echo_server | result: fail
-```
-
-### Decisiones
-•	El script corre nc desde un contenedor en la misma red (no desde el host) para testear exactamente el escenario de runtime.
-
----
-
-### Ejercicio 4 – Terminación Graceful
-Se implementó el manejo de la signal `SIGTERM` en servidor y cliente, logrando un **cierre ordenado**:
-
-- Cierre de sockets.  
-- Liberación de threads y file descriptors.  
-- Logs explícitos de cierre de cada recurso.  
-
-Esto asegura que al ejecutar:
-```bash
-docker compose down -t 5
-```
-los procesos se detengan correctamente sin dejar recursos abiertos.
-
-### Decisiones
-•	Deadlines/Timeouts al leer/escribir sockets para evitar quedar bloqueado si llega SIGTERM en medio de IO.
