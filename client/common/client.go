@@ -7,6 +7,7 @@ import (
     "context"
 	"strings"
     "os/signal"
+	"io"
     "syscall"
 	"github.com/op/go-logging"
 	"os"
@@ -87,20 +88,16 @@ func (c *Client) StartClientLoop() {
     defer stop()
 
     agencyPath := fmt.Sprintf("/data/agency-%s.csv", c.config.ID)
-    bets, err := c.getBetsFromCSV(agencyPath)
-    if err != nil {
-        return
-    }
-    log.Infof("action: dataset_loaded | result: success | client_id: %v | path: %s | count: %d",
-        c.config.ID, agencyPath, len(bets))
 
 	batchMax := c.config.BatchMaxAmount
 	if batchMax <= 0 {
 		batchMax = 50 // default seguro
 		log.Infof("action: config | result: success | step: batch_default | client_id: %v | batch_max: %d", c.config.ID, batchMax)
 	}
-	
-    for i := 0; i < len(bets); {
+
+	const maxBodyBytes = 8000
+		
+    for i := 0; ; {
         select {
         case <-ctx.Done():
             log.Infof("action: shutdown | result: success | step: stop_loop | client_id: %v", c.config.ID)
@@ -108,21 +105,17 @@ func (c *Client) StartClientLoop() {
         default:
         }
 
-        end := i + batchMax
-        if end > len(bets) {
-            end = len(bets)
-        }
-        chunk := bets[i:end]
+		chunk, next, err := c.getBetsFromCSVWindow(agencyPath, i, batchMax, maxBodyBytes)
 
-
-		const maxBodyBytes = 8000
-		chunk, size, err := c.fitBatchBySize(chunk, maxBodyBytes)
+		if err == io.EOF {
+			break // no quedan más registros
+		}
 		if err != nil {
-			log.Errorf("action: send_batch | result: fail | step: single_too_large | client_id: %v", c.config.ID)
+			log.Errorf("action: load_dataset | result: fail | client_id: %v | error: %v", c.config.ID, err)
 			return
 		}
-		if size > 0 && len(chunk) < (end-i) {
-			log.Infof("action: send_batch | result: in_progress | step: shrink_by_bytes | bytes: %d | count: %d", size, len(chunk))
+		if len(chunk) == 0 {
+			break
 		}
 
 		// abrir conexión por batch
@@ -151,7 +144,7 @@ func (c *Client) StartClientLoop() {
 		_ = c.conn.Close()
 		c.conn = nil
 
-		i += len(chunk) // ⚠️ avanzar al próximo segmento
+		i = next // avanzar al próximo segmento
     }
 
 	if err := c.createClientSocket(); err != nil {

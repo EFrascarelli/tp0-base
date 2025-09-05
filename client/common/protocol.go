@@ -417,6 +417,98 @@ func (c *Client) getBetsFromCSV(path string) ([]Bet, error) {
     return out, nil
 }
 
+// Lee un "window" del CSV comenzando en 'start' y devuelve un chunk
+// que respeta batchMax y el límite de bytes del body textual (sin los 4B del frame).
+// Retorna también el próximo índice desde el que continuar (start + len(chunk)).
+// Si llega al final y no hay más datos, devuelve io.EOF cuando el chunk queda vacío.
+func (c *Client) getBetsFromCSVWindow(path string, start, batchMax, maxBodyBytes int) ([]Bet, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		log.Errorf("action: load_dataset | result: fail | step: open_file | path: %s | error: %v", path, err)
+		return nil, start, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+
+	// Saltar las primeras 'start' filas
+	for skipped := 0; skipped < start; skipped++ {
+		if _, err := r.Read(); err != nil {
+			if err == io.EOF {
+				// no hay más registros
+				return nil, start, io.EOF
+			}
+			log.Errorf("action: load_dataset | result: fail | step: skip_record | path: %s | error: %v", path, err)
+			return nil, start, err
+		}
+	}
+
+	agID := 0
+	if id, err := strconv.Atoi(c.config.ID); err == nil {
+		agID = id
+	}
+
+	var out []Bet
+	linesSize := 0 // suma de líneas BET+'\n' (sin contar header BATCH|n)
+
+	for len(out) < batchMax {
+		rec, err := r.Read()
+		if err != nil {
+			if err == io.EOF {
+				// fin de archivo
+				if len(out) == 0 {
+					return nil, start, io.EOF
+				}
+				break
+			}
+			log.Errorf("action: load_dataset | result: fail | step: read_record | path: %s | error: %v", path, err)
+			return nil, start, err
+		}
+		if len(rec) < 5 {
+			log.Errorf("action: load_dataset | result: fail | step: missing_columns | record: %v", rec)
+			return nil, start, fmt.Errorf("invalid record: not enough fields")
+		}
+
+		numero, err := strconv.Atoi(strings.TrimSpace(rec[4]))
+		if err != nil {
+			log.Errorf("action: load_dataset | result: fail | step: parse_number | value: %q | error: %v", rec[4], err)
+			return nil, start, err
+		}
+
+		b := Bet{
+			V:          1,
+			Type:       "bet",
+			Nombre:     strings.TrimSpace(rec[0]),
+			Apellido:   strings.TrimSpace(rec[1]),
+			DNI:        strings.TrimSpace(rec[2]),
+			Nacimiento: strings.TrimSpace(rec[3]),
+			Numero:     numero,
+			AgenciaID:  agID,
+		}
+
+		// Chequear tamaño si agregamos este bet
+		line := betLine(b, agID)
+		nextCount := len(out) + 1
+		headerLen := len(fmt.Sprintf("BATCH|%d\n", nextCount))
+		prospective := headerLen + linesSize + len(line) + 1 // + '\n'
+
+		// si se excede el límite de bytes → cortar batch antes de agregar
+		if prospective > maxBodyBytes {
+			// si ni siquiera entra solo, es un registro imposible
+			if len(out) == 0 {
+				return nil, start, fmt.Errorf("single_too_large")
+			}
+			break
+		}
+
+		out = append(out, b)
+		linesSize += len(line) + 1
+	}
+
+	next := start + len(out)
+	return out, next, nil
+}
+
 func betLine(b Bet, agID int) string {
     // BET|dni|numero|nombre|apellido|nacimiento|agencia_id
     return fmt.Sprintf("BET|%s|%d|%s|%s|%s|%d",
@@ -507,4 +599,103 @@ func (c *Client) sendWinnersQuery(ctx context.Context, agencyID int) (int, []str
 	}
 
 	return count, winners, nil
+}
+
+// streamBatchesFromCSV lee el CSV y va "emitiendo" batches a través de la callback yield.
+// Respeta batchMax y el límite de bytes (maxBodyBytes) del body textual (sin contar los 4B del frame).
+func (c *Client) streamBatchesFromCSV(path string, batchMax int, maxBodyBytes int, yield func([]Bet) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		log.Errorf("action: load_dataset | result: fail | step: open_file | path: %s | error: %v", path, err)
+		return err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+
+	agID := 0
+	if id, err := strconv.Atoi(c.config.ID); err == nil {
+		agID = id
+	}
+
+	cur := make([]Bet, 0, batchMax)
+	// tamaño acumulado de las líneas BET + '\n' (sin header BATCH|n)
+	linesSize := 0
+
+	flush := func() error {
+		if len(cur) == 0 {
+			return nil
+		}
+		if err := yield(cur); err != nil {
+			return err
+		}
+		cur = cur[:0]
+		linesSize = 0
+		return nil
+	}
+
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Errorf("action: load_dataset | result: fail | step: read_record | path: %s | error: %v", path, err)
+			return err
+		}
+		if len(rec) < 5 {
+			log.Errorf("action: load_dataset | result: fail | step: missing_columns | record: %v", rec)
+			return fmt.Errorf("invalid record: not enough fields")
+		}
+		numero, err := strconv.Atoi(strings.TrimSpace(rec[4]))
+		if err != nil {
+			log.Errorf("action: load_dataset | result: fail | step: parse_number | value: %q | error: %v", rec[4], err)
+			return err
+		}
+
+		b := Bet{
+			V:          1,
+			Type:       "bet",
+			Nombre:     strings.TrimSpace(rec[0]),
+			Apellido:   strings.TrimSpace(rec[1]),
+			DNI:        strings.TrimSpace(rec[2]),
+			Nacimiento: strings.TrimSpace(rec[3]),
+			Numero:     numero,
+			AgenciaID:  agID,
+		}
+
+		// calcular tamaño si agregamos este Bet
+		line := betLine(b, agID)
+		nextCount := len(cur) + 1
+		headerLen := len(fmt.Sprintf("BATCH|%d\n", nextCount))
+		prospective := headerLen + linesSize + len(line) + 1 // + '\n'
+
+		// Si excede o supera batchMax, flush antes de agregar
+		if nextCount > batchMax || prospective > maxBodyBytes {
+			// si no hay nada en cur y aun así no entra, es un registro imposible
+			if len(cur) == 0 {
+				return fmt.Errorf("single_too_large")
+			}
+			if err := flush(); err != nil {
+				return err
+			}
+			// recomputar con batch vacío
+			nextCount = 1
+			headerLen = len(fmt.Sprintf("BATCH|%d\n", nextCount))
+			prospective = headerLen + len(line) + 1
+			if prospective > maxBodyBytes {
+				return fmt.Errorf("single_too_large")
+			}
+		}
+
+		// agregar
+		cur = append(cur, b)
+		linesSize += len(line) + 1
+	}
+
+	// último flush
+	if err := flush(); err != nil {
+		return err
+	}
+	return nil
 }
